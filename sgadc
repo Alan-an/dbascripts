@@ -1,0 +1,191 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        sgadc                                                                            #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Reports on v$sga_dynamic_components and gv$sga_dynamic_components.               #
+#                                                                                                #
+#  usage: sgadc [options]                                                                        #
+#                                                                                                #
+#  options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -g          search gv$sql (default is v$sql)                                                #
+#    -s          print SQL query.                                                                #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/28/2014 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'SGA Dynamic Components'
+  Version        = '1.00'
+  VersionDate    = 'Mon Sep 28 09:16:16 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  InstList       = []
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # ------------------------------------------------
+  # Imports that are conditional on Python Version.
+  # ------------------------------------------------
+  if (version_info[0] >= 3):
+    from configparser import SafeConfigParser
+  else:
+    from ConfigParser import SafeConfigParser
+  # ------------------------------------------------
+
+  ArgParser.add_option('-c',  dest='Component',                       default=''  ,    type=str,    help="where upper(component) like '%...%'")
+  ArgParser.add_option('-g',  dest='Global',     action='store_true', default=False,                help="search gv$... (default v$...)")
+  ArgParser.add_option('-i',  dest='Instances',                       default='',      type=str,    help="where inst_id in 1,2,3,...")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Component = Options.Component
+  Global    = Options.Global
+  Instances = Options.Instances
+  Global    = Options.Global
+  Instances = Options.Instances
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  # Assume gv$sysmetric if an instance list is specified.
+  if (Global == False and Instances != ''):
+    Global = True
+
+  if(Instances != ''):
+    InstList = Instances.split(',')
+    try:
+      if (version_info[0] >= 3):
+        InstList = list(map(int, InstList))
+        InstList = list(map(str, InstList))
+      else:
+        InstList = map(int, InstList)
+        InstList = map(str, InstList)
+    except:
+      print("Instance list must be in integer form, eg. -i 1,2,3,4")
+      exit(1)
+
+
+  Sql += "column inst_id             format 999             heading 'Inst'\n"
+  Sql += "column component           format a25             heading 'Component'\n"
+  Sql += "column current_size        format 999,999,999.9   heading 'Current MB'\n"
+  Sql += "column min_size            format 999,999,999.9   heading 'Min. MB'\n"
+  Sql += "column max_size            format 999,999,999.9   heading 'Max MB'\n"
+  Sql += "column user_specified_size format 999,999,999.9   heading 'User Spec. MB'\n"
+  Sql += "column oper_count          format 999,999,999.9   heading 'Oper Count'\n"
+  Sql += "column last_oper_type      format a14             heading 'Last Oper Type'\n"
+  Sql += "column last_oper_mode      format a14             heading 'Last Oper Mode'\n"
+  Sql += "column last_oper_time      format a19             heading 'Last Oper Time'\n"
+  Sql += "column granule_size        format 999,999,999.9   heading 'Granule MB'\n"
+  Sql += "\n"
+  Sql += "break on inst_id skip 1\n"
+  Sql += '\n'
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         inst_id\n"
+    Sql += "       , component\n"
+  else:
+    Sql += "         component\n"
+
+  Sql += "       , current_size/power(1024,2) current_size\n"
+  Sql += "       , min_size/power(1024,2) min_size\n"
+  Sql += "       , max_size/power(1024,2) max_size\n"
+  Sql += "       , user_specified_size/power(1024,2) user_specified_size\n"
+  Sql += "       , oper_count\n"
+  Sql += "       , last_oper_type\n"
+  Sql += "       , last_oper_mode\n"
+  Sql += "       , TO_CHAR(last_oper_time, 'yyyy-mm-dd hh24:mi:ss') last_oper_time\n"
+  Sql += "       , granule_size/power(1024,2) granule_size\n"
+  if (Global):
+    Sql += "    FROM gv$sga_dynamic_components\n"
+  else:
+    Sql += "    FROM v$sga_dynamic_components\n"
+  Sql += "   WHERE 1=1\n"
+  if (Component != ''):
+    Sql += "     AND (UPPER(component) LIKE '%" + Component.upper() + "%')\n"
+  if (InstList != []):
+    Sql += "     AND inst_id IN (" + Instances + ")\n"
+  if (Global):
+    Sql += "ORDER BY inst_id\n"
+    Sql += "       , component;"
+  else:
+    Sql += "ORDER BY component;\n"
+
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

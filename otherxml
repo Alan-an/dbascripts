@@ -1,0 +1,161 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        otherxml                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Dumps the OTHER_XML column from v$sqltext                                        #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/17/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Other XML'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  ###~InstList       = []
+  ###~Now            = datetime.now()
+  ###~EndTime        = (Now.strftime('%Y-%m-%d %H:%M:%S'))
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-a',  dest='Awr',      action='store_true', default=False,           help="search the AWR (default is v$sql)")
+  ArgParser.add_option("-c",  dest="ChildNum",                      default=0,     type=int, help="value for child_no")
+  ArgParser.add_option('-g',  dest='Global',   action='store_true', default=False,           help="search gv$sql (default is v$sql)")
+  ArgParser.add_option("-p",  dest="PlanHash",                      default=0,     type=int, help="value for plan_hash")
+  ArgParser.add_option('-i',  dest='SqlId',                         default='',    type=str, help="value for sql_id")
+  ArgParser.add_option('--s', dest='Show',     action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',  action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Awr         = Options.Awr
+  ChildNum    = str(Options.ChildNum)
+  Global      = Options.Global
+  PlanHash    = str(Options.PlanHash)
+  Show        = Options.Show
+  SqlId       = Options.SqlId
+  ShowVer     = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  # If SQL ID was not passed on the command line...
+  if (SqlId == ''):
+    if (version_info[0] >= 3):
+      SqlId = input('\nEnter SQL ID: ')
+    else:
+      SqlId = raw_input('\nEnter SQL ID:')
+    if (SqlId == ''):
+      print('SQL ID is required.')
+      exit(1)
+
+  if (Global):
+    Sql += "column inst_id       format 999           heading 'Inst'\n"
+  Sql += "column sql_id        format a13           heading 'Sql ID'\n"
+  if (Awr):
+    Sql += "column plan_hash     format 9999999999999 heading 'Plan Hash'\n"
+  else:
+    Sql += "column child_number  format 9999999999999 heading 'Child No.'\n"
+  Sql += "column other_xml     format a150          heading 'Other XML wrap'\n"
+  Sql += "\n"
+  Sql += "set pages 10000\n"
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  if (Awr):
+      Sql += "       sql_id\n"
+      Sql += "     , plan_hash_value plan_hash\n"
+      Sql += "     , other_xml\n"
+      Sql += "  FROM dba_hist_sql_plan\n"
+      Sql += " WHERE sql_id LIKE '%" + SqlId + "%'\n"
+      if (PlanHash != '0'):
+        Sql += "   AND plan_hash_value = " + PlanHash + "\n"
+      Sql += "   AND other_xml IS NOT null;\n"
+  else:
+    if (Global):
+      Sql += "       inst_id\n"
+      Sql += "     , sql_id\n"
+      Sql += "     , child_number\n"
+      Sql += "     , other_xml\n"
+      Sql += "  FROM gv$sql_plan\n"
+    else:
+      Sql += "       sql_id\n"
+      Sql += "     , child_number\n"
+      Sql += "     , other_xml\n"
+      Sql += "  FROM v$sql_plan\n"
+    Sql += " WHERE sql_id LIKE '%" + SqlId + "%'\n"
+    Sql += "   AND child_number = " + ChildNum + "\n"
+    Sql += "   AND other_xml IS NOT null;\n"
+    
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,144 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:         oratab                                                                            #
+# Author:       Randy Johnson                                                                     #
+# Description:  Displays the contents of the oratab file in report format. Commented lines are    #
+#               omitted.                                                                          #
+#                                                                                                 #
+# Usage: oratab [options]                                                                         #
+#                                                                                                 #
+# options:                                                                                        #
+#   -h, --help  show this help message and exit                                                   #
+#   -v          print version info.                                                               #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who              Change Description                                             #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 04/17/2017 1.00 Randy Johnson    Initial release.                                               #
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os.path      import basename
+from os.path      import isfile
+from os.path      import join as pathjoin
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+
+# ---------------------------------------------------------------------------
+# Def : LoadOratab()
+# Desc: Parses the oratab file and returns a dictionary structure of:
+#        {'dbm'      : '/u01/app/oracle/product/11.2.0.3/dbhome_1',
+#         'biuat'    : '/u01/app/oracle/product/11.2.0.3/dbhome_1',
+#         ...
+#        }
+#       Note** the start/stop flag is parsed but not saved.
+#       If the fully qualified oratab file name is passed in it is prepended
+#       to a list of standard locations (/etc/oratab, /var/opt/oracle/oratab)
+#       This list of oratab locations are then searched in order. The first
+#       one to be successfully opened will be used.
+# Args: Oratab (optional, defaults to '')
+# Retn: OratabDict (dictionary object)
+# ---------------------------------------------------------------------------
+def LoadOratab(Oratab=''):
+  OraSid     = ''
+  OraHome    = ''
+  OraFlag    = ''
+  OratabDict = {}
+  OratabLoc  = ['/etc/oratab','/var/opt/oracle/oratab']
+  otab       = ''
+
+  # If an oratab file name has been passed in...
+  if (Oratab != ''):
+    # If the oratab file name passed in is not already in the list of common locations...
+    if (not (Oratab in OratabLoc)):
+      OratabLoc.insert(0, Oratab)
+
+  for Oratab in OratabLoc:
+    if (isfile(Oratab)):
+      try:
+        otab = open(Oratab)
+        break                          # exit the loop if the file can be opened.
+      except:
+        print('\n%s' % traceback.format_exc())
+        print('\nCannot open oratab file: ' + Oratab + ' for read.')
+        return {}
+
+  if (otab == ''):
+    return {}
+  else:
+    OratabContents = otab.read().split('\n')
+    for line in OratabContents:
+      pos = line.find('#')
+      if (pos >= 0):                     # Comment character found.
+        line = line[0:pos]
+      line = line.strip()
+      if (line != ''):
+        Count = line.count(':')
+        if (Count == 2):
+          try:
+            (OraSid, OraHome, OraFlag) = line.split(':')
+            OratabDict[OraSid] = OraHome
+          except:
+            pass
+        elif (Count == 1):
+          try:
+            (OraSid, OraHome) = line.split(':')
+            OratabDict[OraSid] = OraHome
+          except:
+            pass
+  return(OratabDict)
+# ---------------------------------------------------------------------------
+# End LoadOratab()
+# ---------------------------------------------------------------------------
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd          = basename(argv[0])
+  Version      = '1.00'
+  VersionDate  = 'Tue Apr 17 10:52:59 EDT 2017'
+  DevState     = 'Production'
+  Banner       = Cmd + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Oratab       = '/etc/oratab'
+  Flag         = ''
+    
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # Process command line options
+  # ----------------------------------
+  #Usage = 'parms [options] [parm_filter]'
+  ArgParser = OptionParser()
+  ArgParser.add_option("--v", action="store_true", dest="ShowVer",     default=False,           help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  ShowVer = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Oratab = LoadOratab()
+
+  print("\n%-20s %-s" % ("Oracle SID","Oracle Home"))
+  print("%-20s %-s" % ("--------------------","------------------------------------------------------------"))
+  for Db in sorted(Oratab):
+    print("%-20s %-s" % (Db,Oratab[Db]))
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

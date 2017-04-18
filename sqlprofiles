@@ -1,0 +1,144 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        sqlprofiles                                                                       #
+# Author:      Randy Johnson                                                                     #
+# Description: Prints a report of SQL profiles that have been created in the database. Report    #
+#              includes: Name, Category, Status, Sql Text, Force Matching.                       #
+#                                                                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 04/18/2012 1.00 Randy Johnson    Initial write.                                                #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 08/17/2015 2.20 Randy Johnson    Added prompts for username, password, tnsname.                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Sql Profiles'
+  Version        = '2.20'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-d',  dest='Detail',   action='store_true', default=False,           help="print full detailed listing.")
+  ArgParser.add_option("-n",  dest="Name",                          default='',    type=str, help="name of sql profile.")
+  ArgParser.add_option('-r',  dest='Rows',                          default=0,     type=int, help="limit output to nnn rows (default 0=off)")
+  ArgParser.add_option("-t",  dest="SqlText",                       default='',    type=str, help="value for sql_text.")
+  ArgParser.add_option('--s', dest='Show',     action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',  action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  SqlText   = Options.SqlText
+  Detail    = Options.Detail
+  Name      = Options.Name
+  Rows      = str(Options.Rows)
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "col name            format a30       heading 'Name'\n"
+  Sql += "col status          format a8        heading 'Status'\n"
+  Sql += "col sql_text        format a70 trunc heading 'Sql Text'\n"
+  Sql += "col force_matching  format a5        heading 'Force'\n"
+  if (Detail):
+    Sql += "col created         format a19       heading 'Created'\n"
+    Sql += "col last_modified   format a19       heading 'Modified'\n"
+    Sql += "col description     format a30       heading 'Description'\n"
+    Sql += "col category        format a30       heading 'Category'\n"
+    Sql += "col type            format a7        heading 'Type'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         name\n"
+  Sql += "       , INITCAP(status) status\n"
+  Sql += "       , sql_text\n"
+  Sql += "       , INITCAP(force_matching) force_matching\n"
+  if (Detail):
+    Sql += "       , TO_CHAR(created,'yyyy-mm-dd hh24:mi') created\n"
+    Sql += "       , TO_CHAR(last_modified,'yyyy-mm-dd hh24:mi') last_modified\n"
+    Sql += "       , description\n"
+    Sql += "       , INITCAP(category) category\n"
+    Sql += "       , INITCAP(type) type\n"
+  Sql += "    FROM dba_sql_profiles\n"
+  Sql += "   WHERE 1=1\n"
+  if (SqlText != ''):
+    Sql += "     AND sql_text LIKE '%" + SqlText + "%'\n"
+  if (Name != ''):
+    Sql += "     AND name LIKE '%" + Name + "%'\n"
+  if (Rows != '0'):
+    Sql += "     AND rownum <= " + Rows + "\n"
+  Sql += "ORDER BY last_modified desc;\n"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

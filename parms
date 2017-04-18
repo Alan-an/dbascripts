@@ -1,0 +1,305 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        parms                                                                             #
+# Author:      Randy Johnson                                                                     #
+# Description: Prints a list of all instance parameters (including hidden parms). If you         #
+#              provide a parameter or part of a parameter on the command line then all           #
+#              parameters not LIKE %parameter% will be filtered out.                             #
+#                                                                                                #
+#              ISDEF : If True, the parameter is currently set to the default value. Note that   #
+#                      if the parameter is set to the default value in the spfile ISDEF will be  #
+#                      FALSE. This is technically correct but can be a little misleading.        #
+#              ISMOD : If True, value has been modified since the instance was started.          #
+#              ISSET : If True, value has been set in the parameter file. This is TRUE even if   #
+#                      it is set to what would otherwise be the default value.                   #
+#                                                                                                #
+# Usage: parms [connect_string] [options] [parm_filter]                                          #
+#                                                                                                #
+# IsDef : If True, the parameter is currently set to the default value. Note that                #
+#         if the parameter is set to the default value in the spfile IsDef will be               #
+#         False. This is technically correct but can be a little misleading.                     #
+# IsMod : If True, value has been modified from its startup setting.                             #
+# IsSet : If True, value has been set in the parameter file. This is True even if                #
+#         it is set to what would otherwise be the default value.                                #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   -a          parms for all running databases                                                  #
+#   -m          print parameter metrics                                                          #
+#   -n NAME     where name like ...                                                              #
+#   -u          include undocumented (hidden) parms                                              #
+#   --s         print SQL query                                                                  #
+#   --v         print version info.                                                              #
+#                                                                                                #
+#  Examples:                                                                                     #
+#                                                                                                #
+#  [enkdb03:oracle:RANDY1] /home/oracle                                                          #
+#  > parms -n pga -u                                                                             #
+#                                                                                                #
+#  Parameter                                          Value                                      #
+#  -------------------------------------------------- ---------------------------------------    #
+#  pga_aggregate_target                                8589934592                                #
+#  _kdli_sio_pga                                       FALSE                                     #
+#  _kdli_sio_pga_top                                   FALSE                                     #
+#  _ldr_pga_lim                                        0                                         #
+#  __pga_aggregate_target                              8589934592                                #
+#  _pgactx_cap_stacks                                  FALSE                                     #
+#  _pga_large_extent_size                              1048576                                   #
+#  _pga_max_size                                       1717985280                                #
+#  _use_ism_for_pga                                    TRUE                                      #
+#                                                                                                #
+#                                                                                                #
+#  [enkdb03:oracle:RANDY1] /home/oracle                                                          #
+#  > parms -n pga -u -m                                                                          #
+#                                                                                                # 
+#  Parameter                                     Value                         IsDef IsMod IsSet #
+#  --------------------------------------------  ----------------------------- ----- ----- ----- #
+#  pga_aggregate_target                          8589934592                    False False True  #
+#  _kdli_sio_pga                                 FALSE                         True  False False #
+#  _kdli_sio_pga_top                             FALSE                         True  False False #
+#  _ldr_pga_lim                                  0                             True  False False #
+#  __pga_aggregate_target                        8589934592                    False False True  #
+#  _pgactx_cap_stacks                            FALSE                         True  False False #
+#  _pga_large_extent_size                        1048576                       True  False False #
+#  _pga_max_size                                 1717985280                    True  False False #
+#  _use_ism_for_pga                              TRUE                          True  False False #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/27/2012 1.00 Randy Johnson    Initial release.                                              #
+# 05/31/2014 2.00 Randy Johnson    Added -m option to provide two different report formats (one  #
+#                                  with and without parameter change metrics). Added the -s      #
+#                                  option to print the SQL Query. Added the -u option to report  #
+#                                  undocumented (hidden) parameters. By default the report no    #
+#                                  longer includes undocumented parameters.                      #
+# 08/12/2015 3.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 08/12/2015 3.10 Randy Johnson    Added prompts for username, password, tnsname.                #
+# 08/25/2015 3.11 Randy Johnson    Cosmetic only. Tidied up the Sql. Flipped state from dev to   # 
+#                                  prod.                                                         # 
+# 09/16/2015 3.12 Randy Johnson    Fixed invalid results of IsSet (caused by change to INITCAP() #
+#                                  used for IsDef and IsMod.                                     #
+# 02/06/2015 3.13 Randy Johnson    Cosmetic change. TRUE -> True                                 #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from re           import compile
+from re           import match
+from re           import search
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from subprocess   import Popen
+from subprocess   import PIPE
+from subprocess   import STDOUT
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+# For handling termination in stdout pipe, ex: when you run: oerrdump | head
+signal(SIGPIPE, SIG_DFL)
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Parameter Definitions'
+  Version        = '3.13'
+  VersionDate    = 'Mon Feb  6 09:36:43 CST 2017'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Name           = ''
+  FilterList     = []
+  InstList       = []
+  Ps             = '/bin/ps' 
+  rc             = 0
+
+
+  # Process command line options
+  # ----------------------------------
+  Usage  = 'parms [connect_string] [options] [parm_filter]\n\n'
+  Usage += 'IsDef : If True, the parameter is currently set to the default value. Note that\n'
+  Usage += '        if the parameter is set to the default value in the spfile IsDef will be\n'
+  Usage += '        False. This is technically correct but can be a little misleading.\n'
+  Usage += 'IsMod : If True, value has been modified from its startup setting.\n'
+  Usage += 'IsSet : If True, value has been set in the parameter file. This is True even if\n'
+  Usage += '        it is set to what would otherwise be the default value.\n'
+
+  ArgParser = OptionParser(Usage)
+
+  ArgParser.add_option("-a",  dest="All",     action="store_true", default=False,           help="parms for all running databases")
+  ArgParser.add_option("-m",  dest="Metrics", action="store_true", default=False,           help="print parameter metrics")
+  ArgParser.add_option('-n',  dest='Name',                         default='',    type=str, help="where name like ...")
+  ArgParser.add_option("-u",  dest="Undoc",   action="store_true", default=False,           help="include undocumented (hidden) parms")
+  ArgParser.add_option("--s", dest="Show",    action="store_true", default=False,           help="print SQL query")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  All       = Options.All
+  Hidden    = Options.Undoc
+  Metrics   = Options.Metrics
+  Name      = Options.Name
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (All):
+    # Identify pmon process for all instances and build a list of Instance Names
+    Proc = Popen([Ps, '-ef'], bufsize=1, stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+
+    # Stderr is just a placeholder. We redirected stderr to stdout as follows 'stderr=STDOUT'.
+    (Stdout,Stderr) = Proc.communicate()
+    Stdout = Stdout.strip()
+    
+    Found = compile(r' ora_pmon_\w+')  
+    for line in Stdout.split('\n'):
+      if (Found.search(line)):
+        MatchObj = search(r' ora_pmon_\w+', line)
+        Inst = MatchObj.group(0).split('_')[2]
+        InstList.append(Inst)
+
+    if(InstList == []):
+      print("\nNo running databases found on the local host.")
+      exit(1)
+    
+  # Set Where clause filters.
+  if (Hidden):
+    FilterList.append("hidden IN ('N','Y')\n")
+  else:
+    FilterList.append("hidden = 'N'\n")
+
+  if (Name != ''):
+    FilterList.append("UPPER(name) LIKE '%" + Name.upper() + "%'\n")
+
+  Filter = '      AND '.join(FilterList)
+  
+  # Build the Query
+  Sql += "set pagesize 50000\n"
+  Sql += "col inst       format a50 heading 'Inst'\n"
+  Sql += "col name       format a50 heading 'Name'\n"
+  if (Metrics):
+    Sql += "col isdefault  format a5  heading 'IsDef'\n"
+    Sql += "col ismodified format a5  heading 'IsMod'\n"
+    Sql += "col isset      format a5  heading 'IsSet'\n"
+    Sql += "col value      format a60 heading 'Value'\n"
+  else:
+    Sql += "col value      format a78 heading 'Value'\n"
+  Sql += "\n"
+  Sql += "   SELECT " + SqlHeader + "\n"
+  Sql += "          name\n"
+  Sql += "        , value\n"
+  if (Metrics):
+    Sql += "        , isdefault\n"
+    Sql += "        , ismodified\n"
+    Sql += "        , isset\n"
+  Sql += "     FROM ( SELECT hidden\n"
+  Sql += "                 , name\n"
+  Sql += "                 , value\n"
+  Sql += "                 , isdefault\n"
+  Sql += "                 , ismodified\n"
+  Sql += "                 , CASE WHEN isdefault||ismodified = 'TrueFalse'\n"
+  Sql += "                        THEN 'False'\n"
+  Sql += "                        ELSE 'True'\n"
+  Sql += "                   END isset\n"
+  Sql += "              FROM (SELECT DECODE(substr(i.ksppinm,1,1),'_','Y','N') hidden\n"
+  Sql += "                         , i.ksppinm name\n"
+  Sql += "                         , sv.ksppstvl value\n"
+  Sql += "                         , INITCAP(sv.ksppstdf) isdefault\n"
+  Sql += "                         , DECODE(BITAND(sv.ksppstvf,7),1,'True',4,'True','False') ismodified\n"
+  Sql += "                      FROM sys.x$ksppi  i\n"
+  Sql += "                         , sys.x$ksppsv sv\n"
+  Sql += "                     WHERE i.indx = sv.indx\n"
+  Sql += "                   )\n"
+  Sql += "          )\n"
+  if (Filter != ''):
+    Sql += "    WHERE " + Filter
+  Sql += " ORDER BY hidden\n"
+  Sql += "        , replace(name,'_','');\n"
+
+  Sql = Sql.strip()
+  
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+    if (not(ConnStr.upper().find(' AS SYSDBA') >= 0)):
+      ConnStr += ' AS SYSDBA'
+    
+  if(All):
+    for Inst in InstList:
+      PrintSid = '>> ' + Inst + ' <<' 
+      print('-'*(len(PrintSid)))
+      print(PrintSid)
+      print('-'*(len(PrintSid)))
+
+      (OracleSid,OracleHome) = SetOracleEnv(Inst)
+
+      if (not OracleHome):
+        print("ORACLE_HOME not found for: %s. Verify the instance has an entry in the /etc/oratab file.\n" % Inst)
+      else:
+        # Execute the report
+        if (ConnStr != ''):
+          (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+        else:
+          (Stdout) = RunSqlplus(Sql, ErrChk)
+        
+        Stdout = Stdout.strip()
+        
+        # Print the report
+        if (Stdout != ''):
+          print('%s\n' % Stdout)
+  else:
+    # Check/setup the Oracle environment
+    if (not('ORACLE_SID' in list(environ.keys()))):
+      print('ORACLE_SID is required.')
+      exit(1)
+    else:
+      # Set the ORACLE_HOME just in case it isn't set already.
+      if (not('ORACLE_HOME' in list(environ.keys()))):
+        (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+   
+    # Execute the report
+    if (ConnStr != ''):
+      (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+    else:
+      (Stdout) = RunSqlplus(Sql, ErrChk)
+   
+    # Print the report
+    if (Stdout != ''):
+      print('\n%s' % Stdout)
+
+
+  exit(rc)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

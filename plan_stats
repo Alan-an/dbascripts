@@ -1,0 +1,180 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        plan_stats                                                                       #
+#  Author:      Randy Johnson                                                                    #
+#  Description:                                                                                  #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 01/19/2015 1.00 Randy Johnson    Initial write.                                                #
+# 04/23/2015 1.30 Randy Johnson    Updated print statements for Python 3.4 compatibility. This   #
+#                                  is most commonly changes to the print() and join() functions. #
+#                                  Changed the SQL to use Sqlplus headings instead of printing   #
+#                                  them myself.                                                  #
+# 08/13/2015 3.00 Randy Johnson    Added prompts for username, password, tnsname.                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Execution Plan Stats'
+  Version        = '3.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-g',  dest='Global',  action='store_true', default=False,           help="search gv$... (default is v$...)")
+  ArgParser.add_option('-o',  dest='OrderBy',                      default=3,     type=int, help="order by n desc (default 3 desc)")
+  ArgParser.add_option('-r',  dest='Rows',                         default=0,     type=int, help="limit output to nnn rows (default 0=off)")
+  ArgParser.add_option("-i",  dest="SqlId",                        default='',    type=str, help="value for sql_id")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Global    = Options.Global
+  OrderBy   = str(Options.OrderBy)
+  Rows      = str(Options.Rows)
+  SqlId     = Options.SqlId
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "set    heading             on\n"
+  Sql += "set    pagesize            50000\n"
+  Sql += "column inst                format 9999           heading 'Inst.'\n"
+  Sql += "column sql_id              format a13            heading 'Sql ID'\n"
+  Sql += "column plan_hash_value     format 999999999999   heading 'Plan Hash'\n"
+  Sql += "column execs               format 999,999,999    heading 'Execs'\n"
+  Sql += "column etime               format 999,999,999.9  heading 'Total Elapse Time'\n"
+  Sql += "column avg_etime           format 999,999.999    heading 'Avg Elapse Time'\n"
+  Sql += "column avg_cpu_time        format 999,999.999    heading 'Avg. CPU Time'\n"
+  Sql += "column avg_lio             format 999,999,999.9  heading 'Avg. LIO'\n"
+  Sql += "column avg_pio             format 9,999,999.9    heading 'Avg. PIO'\n"
+  Sql += "break on plan_hash_value on startup_time skip 1\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         inst_id inst\n"
+    Sql += "       , sql_id\n"
+    Sql += "       , plan_hash_value\n"
+  else:
+    Sql += "         sql_id\n"
+    Sql += "       , plan_hash_value\n"
+  Sql += "       , DECODE (SUM (execs), 0, 1, SUM (execs)) execs\n"
+  Sql += "       , SUM (etime) etime\n"
+  Sql += "       , SUM (etime) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_etime\n"
+  Sql += "       , SUM (cpu_time) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_cpu_time\n"
+  Sql += "       , SUM (lio) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_lio\n"
+  Sql += "       , SUM (pio) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_pio\n"
+  if (Global):
+    Sql += "    FROM (SELECT inst_id\n"
+    Sql += "               , sql_id\n"
+    Sql += "               , plan_hash_value\n"
+  else:
+    Sql += "    FROM (SELECT sql_id\n"
+    Sql += "               , plan_hash_value\n"
+  Sql += "               , NVL (executions, 0) execs\n"
+  Sql += "               , elapsed_time / 1000000 etime\n"
+  Sql += "               , (elapsed_time/DECODE(NVL(executions, 0), 0, 1, executions))/1000000 avg_etime\n"
+  Sql += "               , buffer_gets lio\n"
+  Sql += "               , disk_reads pio\n"
+  Sql += "               , cpu_time / 1000000 cpu_time\n"
+  Sql += "               , (buffer_gets/DECODE(NVL(buffer_gets, 0), 0, 1, executions)) avg_lio\n"
+  Sql += "               , (cpu_time/DECODE(NVL(executions, 0), 0, 1, executions)) avg_cpu_time\n"
+  if  (Global):
+    Sql += "            FROM gv$sql s\n"
+  else:
+    Sql += "            FROM v$sql s\n"
+  Sql += "           WHERE 1 = 1\n"
+  if (SqlId != ''):
+    Sql += "             AND sql_id = '" + SqlId + "'"                                                                         + '\n'
+  Sql += "         )\n"
+  Sql += "   WHERE 1 = 1\n"
+  if (Rows != '0'):
+    Sql += "     AND rownum <= " + Rows + "\n";
+  if  (Global):
+    Sql += "GROUP BY inst_id\n"
+    Sql += "       , sql_id\n"
+  else:
+    Sql += "GROUP BY sql_id\n"
+  Sql += "       , plan_hash_value\n"
+  if (OrderBy != '3'):
+    Sql += "ORDER BY " + OrderBy + " DESC;\n"
+  else:
+    Sql += "ORDER BY 3 DESC;\n"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

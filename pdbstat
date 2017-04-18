@@ -1,0 +1,144 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:        pdbstat                                                                            #
+# Author:      Randy Johnson                                                                      #
+# Description: Reports the status, GUID, etc. of pluggable databases.                             #
+#                                                                                                 #
+# Usage: pdbstat [options]                                                                        #
+#                                                                                                 #
+# Options:                                                                                        #
+#   -h, --help  show this help message and exit                                                   #
+#   --s         print SQL query.                                                                  #
+#   --v         print version info.                                                               #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who              Change Description                                             #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 09/23/2015 1.00 Randy Johnson    Initial write.                                                 #
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Pluggable Database Status'
+  Version        = '1.00'
+  VersionDate    = 'Wed Sep 23 13:28:28 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column pdb_name        format a15              heading 'Name'\n"
+  Sql += "column con_id          format a5               heading 'ConId'\n"
+  Sql += "column pdb_id          format a5               heading 'PdbId'\n"
+  Sql += "column dbid            format a10              heading 'DbId'\n"
+  Sql += "column con_uid         format a10              heading 'ConUid'\n"
+  Sql += "column guid            format 9999999999999999 heading 'GuId'\n"
+  Sql += "column status          format a9               heading 'Status'\n"
+  Sql += "column open_mode       format a10              heading 'Open Mode'\n"
+  Sql += "column restricted      format a10              heading 'Restricted'\n"
+  Sql += "column creation_scn    format a12              heading 'Creation SCN'\n"
+  Sql += "column vsn             format a12              heading 'VSN'\n"
+  Sql += "column logging         format a9               heading 'Logging'\n"
+  Sql += "column force_logging   format a13              heading 'Force Logging'\n"
+  Sql += "column force_nologging format a15              heading 'Force Nologging'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         TO_CHAR(c.pdb_name) pdb_name\n"
+  Sql += "       , TO_CHAR(c.con_id) con_id\n"
+  Sql += "       , TO_CHAR(c.pdb_id) pdb_id\n"
+  Sql += "       , TO_CHAR(c.dbid) dbid\n"
+  Sql += "       , TO_CHAR(c.con_uid) con_uid\n"
+  Sql += "       , c.guid\n"
+  Sql += "       , INITCAP(status) status\n"
+  Sql += "       , INITCAP(v.open_mode) open_mode\n"
+  Sql += "       , INITCAP(v.restricted) restricted\n"
+  Sql += "       , TO_CHAR(creation_scn) creation_scn\n"
+  Sql += "       , TO_CHAR(vsn) vsn\n"
+  Sql += "       , INITCAP(logging) logging\n"
+  Sql += "       , INITCAP(force_logging) force_logging\n"
+  Sql += "       , INITCAP(force_nologging) force_nologging\n"
+  Sql += "    FROM cdb_pdbs c\n"
+  Sql += "       , v$pdbs   v\n"
+  Sql += "   WHERE c.pdb_id = v.con_id\n"
+  Sql += "ORDER BY 1;" 
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
+

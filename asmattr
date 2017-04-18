@@ -1,0 +1,151 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        asmattr                                                                          #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Report ASM Attributes                                                            #
+#                                                                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/08/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from subprocess   import Popen
+from subprocess   import PIPE
+from subprocess   import STDOUT
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ValidateDate
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'ASM Attributes'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  Now            = datetime.now()
+  EndTime        = (Now.strftime('%Y-%m-%d %H:%M:%S'))
+  ConnStr        = ''
+  Ps             = '/bin/ps'
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-a',  dest='Attr',                         default='',    type=str,  help="where upper(attribute_name) like...")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False,            help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,            help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Attr        = Options.Attr
+  Show        = Options.Show
+  ShowVer     = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column group_name             format a30  heading 'Group Name'\n"
+  Sql += "column attribute              format a50  heading 'Attribute'\n"
+  Sql += "column value                  format a20  heading 'Value'\n"
+  Sql += "column group_number           format 999  heading 'Group|Number'\n"
+  Sql += "column attribute_index        format 999  heading 'Index'\n"
+  Sql += "column attribute_incarnation  format 999  heading 'Incarnation'\n"
+  Sql += "column read_only              format a1   heading 'Read Only?'\n"
+  Sql += "column system_created         format a1   heading 'System Created?'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql +="          g.name group_name\n"
+  Sql +="        , a.name attribute\n"
+  Sql +="        , a.value\n"
+  Sql +="        , a.group_number\n"
+  Sql +="        , a.attribute_index\n"
+  Sql +="        , a.attribute_incarnation\n"
+  Sql +="        , a.read_only\n"
+  Sql +="        , a.system_created\n"
+  Sql +="     FROM v$asm_attribute a\n"
+  Sql +="        , v$asm_diskgroup g\n"
+  Sql +="    WHERE a.group_number = g.group_number\n"
+  if (Attr != ""):
+    Sql += "     AND UPPER(a.name) LIKE '%" + Attr.upper() + "%'\n"
+  Sql +=" ORDER BY g.name\n"
+  Sql +="        , a.name;"
+  
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+  else:
+    # Discover all running database instances and add them to the list.
+    Proc = Popen([Ps, '-ef'], bufsize=1, stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+    
+    # Stderr is just a placeholder. We redirected stderr to stdout as follows 'stderr=STDOUT'.
+    (Stdout,Stderr) = Proc.communicate()
+    Stdout = Stdout.strip()
+                       
+    AsmSid = ''                   
+    for Line in Stdout.split('\n'):
+      (Splt) = Line.split()
+      Uid, Pid, Ppid, C, Stime, Tty, Time, Cmd = Splt[0], Splt[1], Splt[2], Splt[3], Splt[4], Splt[5], Splt[6] , Splt[7]
+      
+      if ((Cmd.find('asm_pmon_+ASM', 0, 13)) >= 0):
+        AsmSid = Cmd[9:]
+      else:
+        if ((Cmd.find('ora_pmon_+ASM', 0, 13)) >= 0):
+          AsmSid = Cmd[9:]
+        else:
+          continue
+    
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (AsmSid != ''):
+      (OracleSid, OracleHome) = SetOracleEnv(AsmSid)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

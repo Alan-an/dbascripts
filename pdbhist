@@ -1,0 +1,127 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:        pdbhist                                                                            #
+# Author:      Randy Johnson                                                                      #
+# Description: Reports the history of pluggable databases.                                        #
+#                                                                                                 #
+# Usage: pdbstat [options]                                                                        #
+#                                                                                                 #
+# Options:                                                                                        #
+#   -h, --help  show this help message and exit                                                   #
+#   --s         print SQL query.                                                                  #
+#   --v         print version info.                                                               #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who              Change Description                                             #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 09/23/2015 1.00 Randy Johnson    Initial write.                                                 #
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Pluggable Database History'
+  Version        = '1.00'
+  VersionDate    = 'Wed Sep 23 13:28:28 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column db_name              format a10 heading 'Db Name'\n"
+  Sql += "column con_id               format 999 heading 'Con ID'\n"
+  Sql += "column pdb_name             format a15 heading 'PDB Name'\n"
+  Sql += "column operation            format a16 heading 'Operation'\n"
+  Sql += "column op_timestamp         format a20 heading 'Oper. Timestamp'\n"
+  Sql += "column cloned_from_pdb_name format a15 heading 'Clone From'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         db_name\n"
+  Sql += "       , con_id\n"
+  Sql += "       , pdb_name\n"
+  Sql += "       , INITCAP(operation) operation\n"
+  Sql += "       , TO_CHAR(op_timestamp, 'YYYY-MM-DD HH24:MI:SS') op_timestamp\n"
+  Sql += "       , cloned_from_pdb_name\n"
+  Sql += "    FROM cdb_pdb_history\n"
+  Sql += "   WHERE con_id > 2\n"
+  Sql += "ORDER BY op_timestamp;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
+

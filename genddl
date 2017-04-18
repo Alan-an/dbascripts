@@ -1,0 +1,270 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        genddl                                                                            #
+# Author:      Randy Johnson                                                                     #
+# Description: Dumps DDL for an object using DBMS_METADATA.GET_DDL                               #
+# Notes:       The following object types are supported:                                         #
+#                - CONSTRAINT (Constraints)                       SND                            #
+#                - DB_LINK (Database links)                       SN                             #
+#                - DEFAULT_ROLE (Default roles)                   G                              #
+#                - FUNCTION (Stored functions)                    SN                             #
+#                - INDEX (Indexes)                                SND                            #
+#                - MATERIALIZED_VIEW (Materialized views)         SN                             #
+#                - MATERIALIZED_VIEW_LOG (Materialized view logs) D                              #
+#                - OBJECT_GRANT (Object grants)                   DG                             #
+#                - PACKAGE (Stored packages)                      SN                             #
+#                - PACKAGE_SPEC (Package specifications)          SN                             #
+#                - PACKAGE_BODY (Package bodies)                  SN                             #
+#                - PROCEDURE (Stored procedures)                  SN                             #
+#                - ROLE (Roles)                                   N                              #
+#                - ROLE_GRANT (Role grants)                       G                              #
+#                - SEQUENCE (Sequences)                           SN                             #
+#                - SYNONYM (Synonyms)                             S                              #
+#                - SYSTEM_GRANT (System privilege grants)         G                              #
+#                - TABLE (Tables)                                 SN                             #
+#                - TABLESPACE (Tablespaces)                       N                              #
+#                - TRIGGER (Triggers)                             SND                            #
+#                - TYPE (User-defined types)                      SN                             #
+#                - TYPE_SPEC (Type specifications)                SN                             #
+#                - TYPE_BODY (Type bodies)                        SN                             #
+#                - USER (Users)                                   N                              #
+#                - VIEW (Views)                                   SN                             #
+#                                                                                                #
+#                Common database objects classified as:                                          #
+#                  (N)amed                                                                       #
+#                  (D)ependent                                                                   #
+#                  (G)ranted                                                                     #
+#                  (S)chema                                                                      #
+#                                                                                                #
+# Usage: genddl [options]                                                                        #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   -n NAME     object name                                                                      #
+#   -t TYPE     object_type                                                                      #
+#   -r          report objects                                                                   #
+#   -s SCHEMA   schema                                                                           #
+#   --v         print version info.                                                              #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/07/2016 1.00 Randy Johnson    Initial write.                                                #
+# 03/01/2017 2.00 Randy Johnson    Added support for extracting DDL for grants.                  #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Generate DDL'
+  Version        = '2.00'
+  VersionDate    = 'Wed Mar  1 09:41:41 CST 2017'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-n',  dest='Name',                         default='',    type=str, help="object name")
+  ArgParser.add_option('-t',  dest='Type',                         default='',    type=str, help="object type")
+  ArgParser.add_option('-r',  dest='Report',  action='store_true', default=False,           help="report objects")
+  ArgParser.add_option('-s',  dest='Schema',                       default='',    type=str, help="schema")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Name        = Options.Name
+  Type        = Options.Type
+  Report      = Options.Report
+  Schema      = Options.Schema
+  ShowVer     = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  if (Report == True):
+    Sql  = "column owner                 format a30             heading 'Owner'\n"
+    Sql += "column object_type           format a30             heading 'Object Type'\n"
+    Sql += "column object_name           format a30             heading 'Object Name'\n"
+    Sql += "column created               format a19             heading 'Created'\n"
+    Sql += "\n"
+    Sql += "SELECT " + SqlHeader + "\n"
+    Sql += "       OWNER\n"
+    Sql += "     , OBJECT_TYPE\n"
+    Sql += "     , OBJECT_NAME\n"
+    Sql += "     , TO_CHAR(CREATED, 'YYYY-MM-DD HH24:MI:SS') created\n"
+    Sql += "  FROM DBA_OBJECTS\n"
+    Sql += " WHERE 1=1\n"
+    if (Schema != ''):
+      Sql += "     AND UPPER(owner) = '" + Schema.upper() + "'\n"
+    if (Name != ''):
+      Sql += "     AND UPPER(object_name) = '" + Name.upper() + "'\n"
+    if (Type != ''):
+      Sql += "     AND UPPER(object_type) = '" + Type.upper() + "'\n"
+    Sql += "ORDER BY owner, object_type, object_name;"
+
+    # Execute the report
+    if (ConnStr != ''):
+      (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+    else:
+      (Stdout) = RunSqlplus(Sql, ErrChk)
+
+    # Print the report
+    if (Stdout != ''):
+      print("\n\n--------------------------")
+      print("-- Object Detail Report --")
+      print("--------------------------")
+      print('\n%s' % Stdout)
+
+    Sql  = "column owner                 format a30             heading 'Owner'\n"
+    Sql += "column object_type           format a30             heading 'Object Type'\n"
+    Sql += "column count                 format 999,999,999     heading 'Count'\n"
+    Sql += "\n"
+    Sql += "SELECT " + SqlHeader + "\n"
+    Sql += "       OWNER\n"
+    Sql += "     , OBJECT_TYPE\n"
+    Sql += "     , COUNT(*) count\n"
+    Sql += "  FROM DBA_OBJECTS\n"
+    Sql += " WHERE 1=1\n"
+    if (Schema != ''):
+      Sql += "     AND UPPER(owner) = '" + Schema.upper() + "'\n"
+    if (Name != ''):
+      Sql += "     AND UPPER(object_name) = '" + Name.upper() + "'\n"
+    if (Type != ''):
+      Sql += "     AND UPPER(object_type) = '" + Type.upper() + "'\n"
+    Sql += "GROUP BY owner, object_type\n"
+    Sql += "ORDER BY owner, object_type;"
+
+    # Execute the report
+    if (ConnStr != ''):
+      (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+    else:
+      (Stdout) = RunSqlplus(Sql, ErrChk)
+
+    # Print the report
+    if (Stdout != ''):
+      print("\n\n---------------------------")
+      print("-- Object Summary Report --")
+      print("---------------------------")
+      print('\n%s' % Stdout)
+
+    exit()
+
+  # If Type was not passed on the command line...
+  if (Type == ''):
+    if (version_info[0] >= 3):
+      Type = input('\nEnter object type: ')
+    else:
+      Type = raw_input('\nEnter object type: ')
+    if (Type == ''):
+      print('Object type is required.')
+      exit(1)
+    Type = Type.strip()
+
+  # If Name was not passed on the command line...
+  if (Name == ''):
+    if (version_info[0] >= 3):
+      Name = input('\nEnter object name: ')
+    else:
+      Name = raw_input('\nEnter object name: ')
+    if (Name == ''):
+      print('Object name is required.')
+      exit(1)
+    Name = Name.strip()
+
+  Sql  = "set heading  off\n"
+  Sql += "set feedback off\n"
+  Sql += "set echo     off\n"
+  Sql += "set pagesize   0\n\n"
+  Sql += "SELECT DBMS_METADATA.GET_DDL(\n"
+  Sql += "         OBJECT_TYPE => '" + Type.upper()   + "',\n"
+  if (Schema != ''):
+    Sql += "         SCHEMA      => '" + Schema.upper() + "',\n"
+  Sql += "         NAME        => '" + Name.upper()   + "'\n"
+  Sql += "       )\n"
+  Sql += "  FROM DUAL;\n\n"
+
+  Sql += "SELECT DBMS_METADATA.GET_DEPENDENT_DDL(\n"
+  Sql += "         OBJECT_TYPE        => '" + Type.upper()   + "',\n"
+  if (Schema != ''):
+    Sql += "         BASE_OBJECT_SCHEMA => '" + Schema.upper() + "',\n"
+  Sql += "         BASE_OBJECT_NAME   => '" + Name.upper()   + "'\n"
+  Sql += "       )\n"
+  Sql += "  FROM DUAL;"
+
+  print(Sql)
+  #exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Stdout)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,847 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        dbinfo                                                                           #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report containing key database information.                             #
+#                                                                                                #
+#  Usage: dbinfo                # run for current database                                       #
+#         dbinfo -a             # run for all instances running on the server.                   #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 12/13/2012 1.00 Randy Johnson    This is a rewrite of the original dbinfo script. This one     #
+#                                  uses the Oracle.py Python library instead of locally defined  #
+#                                  functions. It requires Oracle.py to run.                      #
+# 04/24/2013 1.10 Randy Johnson    Added 'from re import match, search' back in.                 #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 08/18/2015 2.10 Randy Johnson    Bug fixes for handling -a, uninitialized ORACLE_SID, and      #
+#                                  Oracle SID passed on the command line.                        #
+# 02/15/2017 2.10 Randy Johnson    Added a few items such as NLS language properties, added      #
+#                                  columnar report format.                                       #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime   import datetime
+from optparse   import OptionParser
+from os         import environ
+from os         import listdir
+from os         import path
+from os.path    import basename
+from re         import compile
+from re         import match
+from re         import search
+from sys        import argv
+from sys        import exc_info
+from sys        import exit
+from sys        import stdout
+from subprocess import Popen
+from subprocess import PIPE
+from signal     import SIGPIPE
+from signal     import SIG_DFL
+from subprocess import STDOUT
+from Oracle     import GetDbState
+from Oracle     import RunSqlplus
+from Oracle     import PrintError
+from Oracle     import LoadOratab
+from Oracle     import SetOracleEnv
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+# Def : CollectInfo()
+# Desc: Calls sqlplus and runs queries to collect database information from
+#       the database.
+# Args: Oracle SID, ParmList
+# Retn: RawInfo
+#---------------------------------------------------------------------------
+def CollectInfo(Sid):
+  RawInfo    = {}
+  ParmString = ''
+  ParmQry    = ''
+  Sql        = ''
+  PostQry    = ''
+  ParmList   = []
+  PropsList  = []
+  Colsep     = '~'
+
+  # Parameters...
+  ParmList.append('compatible')
+  ParmList.append('cpu_count')
+  ParmList.append('cluster_database')
+  ParmList.append('cluster_database_instances')
+  ParmList.append('db_block_size')
+  ParmList.append('db_cache_size')
+  ParmList.append('db_create_file_dest')
+  ParmList.append('db_domain')
+  ParmList.append('db_name')
+  ParmList.append('db_recovery_file_dest')
+  ParmList.append('db_recovery_file_dest_size')
+  ParmList.append('db_unique_name')
+  ParmList.append('java_pool_size')
+  ParmList.append('large_pool_size')
+  ParmList.append('memory_max_target')
+  ParmList.append('memory_target')
+  ParmList.append('pga_aggregate_target')
+  ParmList.append('resource_manager_plan')
+  ParmList.append('service_names')
+  ParmList.append('sga_max_size')
+  ParmList.append('sga_target')
+  ParmList.append('shared_pool_size')
+  ParmList.append('statistics_level')
+  ParmList.append('streams_pool_size')
+  ParmString = "'" + '\',\n                     \''.join(ParmList) + "'"
+
+  # Properties...
+  PropsList.append('nls_territory')
+  PropsList.append('nls_language')
+  PropsList.append('nls_characterset')
+  PropsList.append('nls_nchar_characterset')
+  PropsList.append('nls_length_semantics')
+  PropsList.append('default_permanent_tablespace')
+  PropsList.append('default_temp_tablespace')
+  PropsList.append('default_tbs_type')
+  PropsString = "'" + '\',\n                       \''.join(PropsList) + "'"
+
+  Sql  = "SET LINES    2000\n"
+  Sql += "SET PAGES    0\n"
+  Sql += "COL NAME     FORMAT A50\n"
+  Sql += "COL VALUE    FORMAT A70\n"
+  Sql += "COL BYTES    FORMAT 9999999999999999999999999999\n"
+  Sql += "SET FEEDBACK OFF\n"
+  Sql += "SET ECHO     OFF\n"
+  Sql += "\n"
+  Sql += "ALTER SESSION SET nls_date_format='yyyy-mm-dd hh24:mi:ss';\n"
+
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       i.ksppinm || '" + Colsep + "' ||\n"
+  Sql += "       sv.ksppstvl\n"
+  Sql += "  FROM sys.x$ksppi  i\n"
+  Sql += "     , sys.x$ksppsv sv\n"
+  Sql += " WHERE  i.indx = sv.indx\n"
+  Sql += "   AND i.ksppinm in (" + ParmString + ");\n"
+
+  ## current_sga_size
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'current_sga_usage' || '" + Colsep + "' ||\n"
+  Sql += "       sum(value)\n"
+  Sql += "  FROM sys.v$sga;\n"
+
+  # Connected Instance
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'instance_name' ||'" + Colsep + "' ||\n"
+  Sql += "       instance_name\n"
+  Sql += "  FROM sys.v$instance;\n"
+
+  # Database Version
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'db_version' ||'" + Colsep + "' ||\n"
+  Sql += "       version\n"
+  Sql += "  FROM product_component_version\n"
+  Sql += " WHERE product LIKE 'Oracle Database %';\n"
+
+  # Storage for data files
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'datafile_bytes'||'" + Colsep + "' ||\n"
+  Sql += "       sum(bytes)\n"
+  Sql += "  FROM dba_data_files;\n"
+
+  ## Storage for temp files
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'tempfile_bytes'||'" + Colsep + "' ||\n"
+  Sql += "       sum(bytes)\n"
+  Sql += "  FROM dba_temp_files;\n"
+
+
+  # Storage for redo logs
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'redofile_bytes' || '" + Colsep + "'||\n"
+  Sql += "       sum(bytes)\n"
+  Sql += "  FROM v$log;\n"
+
+  # Storage for controlfiles
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'controlfile_bytes' || '" + Colsep + "' ||\n"
+  Sql += "       sum(block_size*file_size_blks)\n"
+  Sql += " FROM v$controlfile;\n"
+
+  ## Total storage (datafiles + tempfiles + redo logs + controlfiles)
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'total_storage_bytes' || '" + Colsep + "' ||\n"
+  Sql += "        (dfiles.bytes + tfiles.bytes + rfiles.bytes + cfiles.bytes)\n"
+  Sql += "  FROM (SELECT 'a' col1, sum(bytes) bytes                     FROM dba_data_files) dfiles,\n"
+  Sql += "       (SELECT 'a' col1, sum(bytes) bytes                     FROM dba_temp_files) tfiles,\n"
+  Sql += "       (SELECT 'a' col1, sum(bytes) bytes                     FROM v$log)          rfiles,\n"
+  Sql += "       (SELECT 'a' col1, sum(block_size*file_size_blks) bytes FROM v$controlfile)  cfiles\n"
+  Sql += " WHERE dfiles.col1 = tfiles.col1\n"
+  Sql += "   AND dfiles.col1 = rfiles.col1\n"
+  Sql += "   AND dfiles.col1 = cfiles.col1;\n"
+
+  ## dbid
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'db_id' || '" + Colsep + "' ||\n"
+  Sql += "       dbid\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## force logging
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'force_logging' || '" + Colsep + "' ||\n"
+  Sql += "       force_logging\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## open mode
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'db_open_mode' || '" + Colsep + "' ||\n"
+  Sql += "       open_mode\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## current scn
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'current_scn' || '" + Colsep + "' ||\n"
+  Sql += "       current_scn\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## logmode
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'log_mode' || '" + Colsep + "' ||\n"
+  Sql += "       log_mode\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## platform
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'platform_name' || '" + Colsep + "' ||\n"
+  Sql += "       platform_name\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## endian
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'endian_format' || '" + Colsep + "' ||\n"
+  Sql += "       t.endian_format\n"
+  Sql += "  FROM sys.v$database d\n"
+  Sql += "     , sys.v$transportable_platform t\n"
+  Sql += " WHERE d.platform_id = t.platform_id;\n"
+
+  ## last open incarnation
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'last_open_incarnation#' || '" + Colsep + "' ||\n"
+  Sql += "       last_open_incarnation#\n"
+  Sql += "  FROM sys.v$database;\n"
+
+  ## archiver state
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'archiver' || '" + Colsep + "' ||\n"
+  Sql += "       archiver\n"
+  Sql += "  FROM sys.v$instance;\n"
+
+  ## host memory
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'host_' || LOWER(stat_name) || '" + Colsep + "' ||\n"
+  Sql += "       value\n"
+  Sql += "  FROM sys.v$osstat\n"
+  Sql += " WHERE LOWER(stat_name) in ('physical_memory_bytes','num_cpu_cores','num_cpus','num_cpu_sockets');\n"
+
+  ## logins allowed
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       'logins' || '" + Colsep + "' ||\n"
+  Sql += "       logins\n"
+  Sql += "  FROM sys.v$instance;\n"
+
+  # nls properties
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       '" + Sid + "' || '" + Colsep + "' ||\n"
+  Sql += "       LOWER(name) || '" + Colsep + "' ||\n"
+  Sql += "       value$\n"
+  Sql += "  FROM sys.props$\n"
+  Sql += " WHERE LOWER(name) IN (" + PropsString + ");\n"
+
+  Sql += "\nEXIT"
+
+  # Fetch parameters from the database
+  (rc,Stdout,ErrorList) = RunSqlplus(Sql, True)
+
+  if (rc != 0):
+    PrintError(Sql, Stdout, ErrorList)
+    RawInfo['_extract_status'] = 'failure'
+    print(' Error Retrieving info from database: %s' % Sid)
+  else:
+    RawInfo['_extract_status'] = 'success'
+    for line in Stdout.split('\n'):
+      if (line.count(Colsep) == 2):
+        (Sid, Parm, Value) = line.split(Colsep)
+        if (Sid == environ['ORACLE_SID']):
+          RawInfo[Parm] = Value
+
+  ###~ for key in sorted(RawInfo):
+  ###~   print("%-40s %s" % (key,RawInfo[key]))
+
+  return(RawInfo)
+#---------------------------------------------------------------------------
+# End CollectInfo()
+#---------------------------------------------------------------------------
+
+# Def : TransformInfo()
+# Desc: Assigns values retrieved from the database to global variables.
+# Args: RawInfo{}
+# Retn: DbInfo{}
+#---------------------------------------------------------------------------
+def TransformInfo(RawInfo):
+  DbInfo = {}
+
+  try:    DbInfo['archiver']                       = RawInfo['archiver']
+  except: DbInfo['archiver']                       = 'unknown'
+
+  try:    DbInfo['cluster_database']               = RawInfo['cluster_database']
+  except: DbInfo['cluster_database']               = 'unknown'
+
+  try:    DbInfo['cluster_database_instances']     = RawInfo['cluster_database_instances']
+  except: DbInfo['cluster_database_instances']     = 'unknown'
+
+  try:    DbInfo['compatible']                     = RawInfo['compatible']
+  except: DbInfo['compatible']                     = 'unknown'
+
+  try:    DbInfo['controlfile_bytes']              = FormatNumber(RawInfo['controlfile_bytes'])
+  except: DbInfo['controlfile_bytes']              = 'unknown'
+
+  try:    DbInfo['cpu_count']                      = RawInfo['cpu_count']
+  except: DbInfo['cpu_count']                      = 'unknown'
+
+  try:    DbInfo['current_scn']                    = RawInfo['current_scn']
+  except: DbInfo['current_scn']                    = 'unknown'
+
+  try:    DbInfo['current_sga_usage']              = FormatNumber(RawInfo['current_sga_usage'])
+  except: DbInfo['current_sga_usage']              = 'unknown'
+
+  try:    DbInfo['datafile_bytes']                 = FormatNumber(RawInfo['datafile_bytes'])
+  except: DbInfo['datafile_bytes']                 = 'unknown'
+
+  try:    DbInfo['db_block_size']                  = RawInfo['db_block_size']
+  except: DbInfo['db_block_size']                  = 'unknown'
+
+  try:    DbInfo['db_cache_size']                  = FormatNumber(RawInfo['db_cache_size'])
+  except: DbInfo['db_cache_size']                  = 'unknown'
+
+  try:    DbInfo['db_create_file_dest']            = RawInfo['db_create_file_dest']
+  except: DbInfo['db_create_file_dest']            = 'unknown'
+
+  try:    DbInfo['db_domain']                      = RawInfo['db_domain']
+  except: DbInfo['db_domain']                      = 'unknown'
+
+  try:    DbInfo['db_id']                          = RawInfo['db_id']
+  except: DbInfo['db_id']                          = 'unknown'
+
+  try:    DbInfo['db_name']                        = RawInfo['db_name']
+  except: DbInfo['db_name']                        = 'unknown'
+
+  try:    DbInfo['db_open_mode']                   = RawInfo['db_open_mode']
+  except: DbInfo['db_open_mode']                   = 'unknown'
+
+  try:    DbInfo['db_recovery_file_dest']          = RawInfo['db_recovery_file_dest']
+  except: DbInfo['db_recovery_file_dest']          = 'unknown'
+
+  try:    DbInfo['db_recovery_file_dest_size']     = FormatNumber(RawInfo['db_recovery_file_dest_size'])
+  except: DbInfo['db_recovery_file_dest_size']     = 'unknown'
+
+  try:    DbInfo['db_unique_name']                 = RawInfo['db_unique_name']
+  except: DbInfo['db_unique_name']                 = 'unknown'
+
+  try:    DbInfo['db_version']                     = RawInfo['db_version']
+  except: DbInfo['db_version']                     = 'unknown'
+
+  try:    DbInfo['default_permanent_tablespace']   = RawInfo['default_permanent_tablespace']
+  except: DbInfo['default_permanent_tablespace']   = 'unknown'
+
+  try:    DbInfo['default_tbs_type']               = RawInfo['default_tbs_type']
+  except: DbInfo['default_tbs_type']               = 'unknown'
+
+  try:    DbInfo['default_temp_tablespace']        = RawInfo['default_temp_tablespace']
+  except: DbInfo['default_temp_tablespace']        = 'unknown'
+
+  try:    DbInfo['endian_format']                  = RawInfo['endian_format']
+  except: DbInfo['endian_format']                  = 'unknown'
+
+  try:    DbInfo['force_logging']                  = RawInfo['force_logging']
+  except: DbInfo['force_logging']                  = 'unknown'
+
+  try:    DbInfo['host_num_cpu_cores']             = RawInfo['host_num_cpu_cores']
+  except: DbInfo['host_num_cpu_cores']             = 'unknown'
+
+  try:    DbInfo['host_num_cpus']                  = RawInfo['host_num_cpus']
+  except: DbInfo['host_num_cpus']                  = 'unknown'
+
+  try:    DbInfo['host_num_cpu_sockets']           = RawInfo['host_num_cpu_sockets']
+  except: DbInfo['host_num_cpu_sockets']           = 'unknown'
+
+  try:    DbInfo['host_physical_memory_bytes']     = FormatNumber(RawInfo['host_physical_memory_bytes'])
+  except: DbInfo['host_physical_memory_bytes']     = 'unknown'
+
+  try:    DbInfo['instance_name']                  = RawInfo['instance_name']
+  except: DbInfo['instance_name']                  = 'unknown'
+
+  try:    DbInfo['java_pool_size']                 = FormatNumber(RawInfo['java_pool_size'])
+  except: DbInfo['java_pool_size']                 = 'unknown'
+
+  try:    DbInfo['large_pool_size']                = FormatNumber(RawInfo['large_pool_size'])
+  except: DbInfo['large_pool_size']                = 'unknown'
+
+  try:    DbInfo['last_open_incarnation#']         = RawInfo['last_open_incarnation#']
+  except: DbInfo['last_open_incarnation#']         = 'unknown'
+
+  try:    DbInfo['logins']                         = RawInfo['logins']
+  except: DbInfo['logins']                         = 'unknown'
+
+  try:    DbInfo['log_mode']                       = RawInfo['log_mode']
+  except: DbInfo['log_mode']                       = 'unknown'
+
+  try:    DbInfo['memory_max_target']              = int(RawInfo['memory_max_target'])
+  except: DbInfo['memory_max_target']              = 'unknown'
+
+  try:    DbInfo['memory_target']                  = int(RawInfo['memory_target'])
+  except: DbInfo['memory_target']                  = 'unknown'
+
+  try:    DbInfo['nls_characterset']               = RawInfo['nls_characterset']
+  except: DbInfo['nls_characterset']               = 'unknown'
+
+  try:    DbInfo['nls_language']                   = RawInfo['nls_language']
+  except: DbInfo['nls_language']                   = 'unknown'
+
+  try:    DbInfo['nls_length_semantics']           = RawInfo['nls_length_semantics']
+  except: DbInfo['nls_length_semantics']           = 'unknown'
+
+  try:    DbInfo['nls_nchar_characterset']         = RawInfo['nls_nchar_characterset']
+  except: DbInfo['nls_nchar_characterset']         = 'unknown'
+
+  try:    DbInfo['nls_territory']                  = RawInfo['nls_territory']
+  except: DbInfo['nls_territory']                  = 'unknown'
+
+  try:    DbInfo['pga_aggregate_target']           = FormatNumber(RawInfo['pga_aggregate_target'])
+  except: DbInfo['pga_aggregate_target']           = 'unknown'
+
+  try:    DbInfo['platform_name']                  = RawInfo['platform_name']
+  except: DbInfo['platform_name']                  = 'unknown'
+
+  try:    DbInfo['redofile_bytes']                 = FormatNumber(RawInfo['redofile_bytes'])
+  except: DbInfo['redofile_bytes']                 = 'unknown'
+
+  try:    DbInfo['resource_manager_plan']          = RawInfo['resource_manager_plan']
+  except: DbInfo['resource_manager_plan']          = 'unknown'
+
+  try:    DbInfo['service_names']                  = RawInfo['service_names']
+  except: DbInfo['service_names']                  = 'unknown'
+
+  try:    DbInfo['sga_max_size']                   = FormatNumber(RawInfo['sga_max_size'])
+  except: DbInfo['sga_max_size']                   = 'unknown'
+
+  try:    DbInfo['sga_target']                     = int(RawInfo['sga_target'])
+  except: DbInfo['sga_target']                     = 'unknown'
+
+  try:    DbInfo['shared_pool_size']               = FormatNumber(RawInfo['shared_pool_size'])
+  except: DbInfo['shared_pool_size']               = 'unknown'
+
+  try:    DbInfo['statistics_level']               = RawInfo['statistics_level']
+  except: DbInfo['statistics_level']               = 'unknown'
+
+  try:    DbInfo['streams_pool_size']              = FormatNumber(RawInfo['streams_pool_size'])
+  except: DbInfo['streams_pool_size']              = 'unknown'
+
+  try:    DbInfo['tempfile_bytes']                 = FormatNumber(RawInfo['tempfile_bytes'])
+  except: DbInfo['tempfile_bytes']                 = 'unknown'
+
+  try:    DbInfo['total_storage_bytes']            = FormatNumber(RawInfo['total_storage_bytes'])
+  except: DbInfo['total_storage_bytes']            = 'unknown'
+
+  if (DbInfo['memory_max_target'] != 'unkown' and DbInfo['memory_target'] != 'unknown' and DbInfo['sga_target'] != 'unknown'):
+    if (DbInfo['memory_max_target'] > 0 and DbInfo['memory_target'] > 0):
+      DbInfo['memory_management'] = 'AMM'
+    elif (DbInfo['sga_target'] > 0 and (DbInfo['statistics_level'].lower() == 'typical' or DbInfo['statistics_level'].lower() == 'all')):
+        DbInfo['memory_management'] = 'ASMM'
+    else:
+      DbInfo['memory_management'] = 'None'
+    DbInfo['memory_max_target'] = FormatNumber(RawInfo['memory_max_target'])
+    DbInfo['memory_target']     = FormatNumber(RawInfo['memory_target'])
+    DbInfo['sga_target']        = FormatNumber(RawInfo['sga_target'])
+  else:
+    DbInfo['memory_management'] = 'unknown'
+
+  ###~ for key in sorted(DbInfo):
+  ###~    print("%-40s %s" % (key,DbInfo[key]))
+
+  return(DbInfo)
+#---------------------------------------------------------------------------
+# End TransformInfo()
+#---------------------------------------------------------------------------
+
+# Def : StandardReport()
+# Desc: Prints a detailed report of database configuration information.
+# Args: RawInfo
+# Retn: Report Text
+#---------------------------------------------------------------------------
+def StandardReport(RawInfo):
+  Report            = ''
+
+  if (RawInfo['_extract_status'] == 'success'):
+    DbInfo = TransformInfo(RawInfo)
+
+    Report +=' General Information:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('instance_name',                DbInfo['instance_name'])
+    Report +='\n %-28s  %-29s' % ('db_name',                      DbInfo['db_name'])
+    Report +='\n %-28s  %-29s' % ('db_unique_name',               DbInfo['db_unique_name'])
+    Report +='\n %-28s  %-29s' % ('db_domain',                    DbInfo['db_domain'])
+    Report +='\n %-28s  %-29s' % ('db_block_size',                DbInfo['db_block_size'])
+    Report +='\n %-28s  %-29s' % ('db_id',                        DbInfo['db_id'])
+    Report +='\n %-28s  %-29s' % ('db_version',                   DbInfo['db_version'])
+    Report +='\n %-28s  %-29s' % ('compatible',                   DbInfo['compatible'])
+    Report +='\n %-28s  %-29s' % ('cluster_database',             DbInfo['cluster_database'])
+    Report +='\n %-28s  %-29s' % ('cluster_database_instances',   DbInfo['cluster_database_instances'])
+    Report +='\n %-28s  %-29s' % ('current_scn',                  DbInfo['current_scn'])
+    Report +='\n %-28s  %-29s' % ('db_open_mode',                 DbInfo['db_open_mode'])
+    Report +='\n %-28s  %-29s' % ('force_logging',                DbInfo['force_logging'])
+    Report +='\n %-28s  %-29s' % ('last_open_incarnation#',       DbInfo['last_open_incarnation#'])
+    Report +='\n %-28s  %-29s' % ('log_mode',                     DbInfo['log_mode'])
+    Report +='\n %-28s  %-29s' % ('archiver',                     DbInfo['archiver'])
+    Report +='\n %-28s  %-29s' % ('logins',                       DbInfo['logins'])
+    Report +='\n %-28s  %-29s' % ('service_names',                DbInfo['service_names'])
+
+    Report +='\n\n Host Configuration:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('host_num_cpu_cores',           DbInfo['host_num_cpu_cores'])
+    Report +='\n %-28s  %-29s' % ('host_num_cpu_sockets',         DbInfo['host_num_cpu_sockets'])
+    Report +='\n %-28s  %-29s' % ('host_num_cpus',                DbInfo['host_num_cpus'])
+    Report +='\n %-28s  %-29s' % ('host_physical_memory_bytes',   DbInfo['host_physical_memory_bytes'])
+    Report +='\n %-28s  %-29s' % ('endian_format',                DbInfo['endian_format'])
+    Report +='\n %-28s  %-29s' % ('platform_name',                DbInfo['platform_name'])
+
+    Report +='\n\n NLS Configuration:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('nls_territory',                DbInfo['nls_territory'])
+    Report +='\n %-28s  %-29s' % ('nls_language',                 DbInfo['nls_language'])
+    Report +='\n %-28s  %-29s' % ('nls_characterset',             DbInfo['nls_characterset'])
+    Report +='\n %-28s  %-29s' % ('nls_nchar_characterset',       DbInfo['nls_nchar_characterset'])
+    Report +='\n %-28s  %-29s' % ('nls_length_semantics',         DbInfo['nls_length_semantics'])
+
+    Report +='\n\n Memory Configuration:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('memory_management',            DbInfo['memory_management'])
+    Report +='\n %-28s  %-29s' % ('statistics_level',             DbInfo['statistics_level'])
+    Report +='\n %-28s  %-29s' % ('sga_target',                   DbInfo['sga_target'])
+    Report +='\n %-28s  %-29s' % ('sga_max_size',                 DbInfo['sga_max_size'])
+    Report +='\n %-28s  %-29s' % ('memory_target',                DbInfo['memory_target'])
+    Report +='\n %-28s  %-29s' % ('memory_max_target',            DbInfo['memory_max_target'])
+    Report +='\n %-28s  %-29s' % ('pga_aggregate_target',         DbInfo['pga_aggregate_target'])
+
+    Report +='\n\n Memory Pool Sizes:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('db_cache_size',                DbInfo['db_cache_size'])
+    Report +='\n %-28s  %-29s' % ('shared_pool_size',             DbInfo['shared_pool_size'])
+    Report +='\n %-28s  %-29s' % ('streams_pool_size',            DbInfo['streams_pool_size'])
+    Report +='\n %-28s  %-29s' % ('large_pool_size',              DbInfo['large_pool_size'])
+    Report +='\n %-28s  %-29s' % ('java_pool_size',               DbInfo['java_pool_size'])
+    Report +='\n %-28s  %-29s' % ('current_sga_usage',            DbInfo['current_sga_usage'])
+
+    Report +='\n\n Storage Configuration:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('db_create_file_dest',          DbInfo['db_create_file_dest'])
+    Report +='\n %-28s  %-29s' % ('db_recovery_file_dest',        DbInfo['db_recovery_file_dest'])
+    Report +='\n %-28s  %-29s' % ('db_recovery_file_dest_size',   DbInfo['db_recovery_file_dest_size'])
+    Report +='\n %-28s  %-29s' % ('default_tbs_type',             DbInfo['default_tbs_type'])
+    Report +='\n %-28s  %-29s' % ('default_permanent_tablespace', DbInfo['default_permanent_tablespace'])
+    Report +='\n %-28s  %-29s' % ('default_temp_tablespace',      DbInfo['default_temp_tablespace'])
+
+    Report +='\n\n Storage Utilization:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('datafile_bytes',               DbInfo['datafile_bytes'])
+    Report +='\n %-28s  %-29s' % ('tempfile_bytes',               DbInfo['tempfile_bytes'])
+    Report +='\n %-28s  %-29s' % ('redofile_bytes',               DbInfo['redofile_bytes'])
+    Report +='\n %-28s  %-29s' % ('controlfile_bytes',            DbInfo['controlfile_bytes'])
+    Report +='\n %-28s  %-29s' % ('total_storage_bytes',          DbInfo['total_storage_bytes'])
+
+    Report +='\n\n Resource Management:'
+    Report +='\n %-28s  %-29s' % (('-'*28), ('-'*60))
+    Report +='\n %-28s  %-29s' % ('cpu_count',                    DbInfo['cpu_count'])
+    Report +='\n %-28s  %-29s' % ('resource_manager_plan',        DbInfo['resource_manager_plan'])
+
+  return(Report)
+#---------------------------------------------------------------------------
+# End StandardReport()
+#---------------------------------------------------------------------------
+
+
+# Def : KeyvalReport()
+# Desc: Prints a detailed report of database configuration information.
+# Args: RawInfo
+# Retn: Report Text
+#---------------------------------------------------------------------------
+def KeyvalReport(RawInfo):
+  Report            = ''
+
+  if (RawInfo['_extract_status'] == 'success'):
+    DbInfo = TransformInfo(RawInfo)
+    ###~ for key in sorted(DbInfo):
+    ###~   Report += '\n %-s=%-s' % (key, DbInfo[key])
+    Report +='\n %-s=%-s' % ('instance_name',                DbInfo['instance_name'])
+    Report +='\n %-s=%-s' % ('db_name',                      DbInfo['db_name'])
+    Report +='\n %-s=%-s' % ('db_unique_name',               DbInfo['db_unique_name'])
+    Report +='\n %-s=%-s' % ('db_domain',                    DbInfo['db_domain'])
+    Report +='\n %-s=%-s' % ('db_block_size',                DbInfo['db_block_size'])
+    Report +='\n %-s=%-s' % ('db_id',                        DbInfo['db_id'])
+    Report +='\n %-s=%-s' % ('db_version',                   DbInfo['db_version'])
+    Report +='\n %-s=%-s' % ('compatible',                   DbInfo['compatible'])
+    Report +='\n %-s=%-s' % ('cluster_database',             DbInfo['cluster_database'])
+    Report +='\n %-s=%-s' % ('cluster_database_instances',   DbInfo['cluster_database_instances'])
+    Report +='\n %-s=%-s' % ('current_scn',                  DbInfo['current_scn'])
+    Report +='\n %-s=%-s' % ('db_open_mode',                 DbInfo['db_open_mode'])
+    Report +='\n %-s=%-s' % ('force_logging',                DbInfo['force_logging'])
+    Report +='\n %-s=%-s' % ('last_open_incarnation#',       DbInfo['last_open_incarnation#'])
+    Report +='\n %-s=%-s' % ('log_mode',                     DbInfo['log_mode'])
+    Report +='\n %-s=%-s' % ('archiver',                     DbInfo['archiver'])
+    Report +='\n %-s=%-s' % ('logins',                       DbInfo['logins'])
+    Report +='\n %-s=%-s' % ('service_names',                DbInfo['service_names'])
+    Report +='\n %-s=%-s' % ('host_num_cpu_cores',           DbInfo['host_num_cpu_cores'])
+    Report +='\n %-s=%-s' % ('host_num_cpu_sockets',         DbInfo['host_num_cpu_sockets'])
+    Report +='\n %-s=%-s' % ('host_num_cpus',                DbInfo['host_num_cpus'])
+    Report +='\n %-s=%-s' % ('host_physical_memory_bytes',   ''.join(DbInfo['host_physical_memory_bytes'].split(',')))
+    Report +='\n %-s=%-s' % ('endian_format',                DbInfo['endian_format'])
+    Report +='\n %-s=%-s' % ('platform_name',                DbInfo['platform_name'])
+    Report +='\n %-s=%-s' % ('nls_territory',                DbInfo['nls_territory'])
+    Report +='\n %-s=%-s' % ('nls_language',                 DbInfo['nls_language'])
+    Report +='\n %-s=%-s' % ('nls_characterset',             DbInfo['nls_characterset'])
+    Report +='\n %-s=%-s' % ('nls_nchar_characterset',       DbInfo['nls_nchar_characterset'])
+    Report +='\n %-s=%-s' % ('nls_length_semantics',         DbInfo['nls_length_semantics'])
+    Report +='\n %-s=%-s' % ('memory_management',            DbInfo['memory_management'])
+    Report +='\n %-s=%-s' % ('statistics_level',             DbInfo['statistics_level'])
+    Report +='\n %-s=%-s' % ('sga_target',                   ''.join(DbInfo['sga_target'].split(',')))
+    Report +='\n %-s=%-s' % ('sga_max_size',                 ''.join(DbInfo['sga_max_size'].split(',')))
+    Report +='\n %-s=%-s' % ('memory_target',                ''.join(DbInfo['memory_target'].split(',')))
+    Report +='\n %-s=%-s' % ('memory_max_target',            ''.join(DbInfo['memory_max_target'].split(',')))
+    Report +='\n %-s=%-s' % ('pga_aggregate_target',         ''.join(DbInfo['pga_aggregate_target'].split(',')))
+    Report +='\n %-s=%-s' % ('db_cache_size',                ''.join(DbInfo['db_cache_size'].split(',')))
+    Report +='\n %-s=%-s' % ('shared_pool_size',             ''.join(DbInfo['shared_pool_size'].split(',')))
+    Report +='\n %-s=%-s' % ('streams_pool_size',            ''.join(DbInfo['streams_pool_size'].split(',')))
+    Report +='\n %-s=%-s' % ('large_pool_size',              ''.join(DbInfo['large_pool_size'].split(',')))
+    Report +='\n %-s=%-s' % ('java_pool_size',               ''.join(DbInfo['java_pool_size'].split(',')))
+    Report +='\n %-s=%-s' % ('current_sga_usage',            ''.join(DbInfo['current_sga_usage'].split(',')))
+    Report +='\n %-s=%-s' % ('db_create_file_dest',          DbInfo['db_create_file_dest'])
+    Report +='\n %-s=%-s' % ('db_recovery_file_dest',        DbInfo['db_recovery_file_dest'])
+    Report +='\n %-s=%-s' % ('db_recovery_file_dest_size',   ''.join(DbInfo['db_recovery_file_dest_size'].split(',')))
+    Report +='\n %-s=%-s' % ('default_tbs_type',             DbInfo['default_tbs_type'])
+    Report +='\n %-s=%-s' % ('default_permanent_tablespace', DbInfo['default_permanent_tablespace'])
+    Report +='\n %-s=%-s' % ('default_temp_tablespace',      DbInfo['default_temp_tablespace'])
+    Report +='\n %-s=%-s' % ('datafile_bytes',               ''.join(DbInfo['datafile_bytes'].split(',')))
+    Report +='\n %-s=%-s' % ('tempfile_bytes',               ''.join(DbInfo['tempfile_bytes'].split(',')))
+    Report +='\n %-s=%-s' % ('redofile_bytes',               ''.join(DbInfo['redofile_bytes'].split(',')))
+    Report +='\n %-s=%-s' % ('controlfile_bytes',            ''.join(DbInfo['controlfile_bytes'].split(',')))
+    Report +='\n %-s=%-s' % ('total_storage_bytes',          ''.join(DbInfo['total_storage_bytes'].split(',')))
+    Report +='\n %-s=%-s' % ('cpu_count',                    DbInfo['cpu_count'])
+    Report +='\n %-s=%-s' % ('resource_manager_plan',        DbInfo['resource_manager_plan'])
+
+  return(Report)
+#---------------------------------------------------------------------------
+# End KeyvalReport()
+#---------------------------------------------------------------------------
+
+
+# Def : FormatNumber()
+# Desc: Simple function to format numbers with commas to separate thousands.
+# Args: s    = numeric_string
+#       tSep = thousands_separation_character (default is ',')
+#       dSep = decimal_separation_character (default is '.')
+# Retn: formatted string
+#---------------------------------------------------------------------------
+def FormatNumber( s, tSep=',', dSep='.'):
+  # Splits a general float on thousands.
+  if s == None:
+    return(0)
+  if not isinstance( s, str):
+    s = str( s)
+
+  cnt=0
+  numChars=dSep+'0123456789'
+  ls=len(s)
+  while cnt < ls and s[cnt] not in numChars: cnt += 1
+
+  lhs = s[ 0:cnt ]
+  s = s[ cnt: ]
+  if dSep == '':
+    cnt = -1
+  else:
+    cnt = s.rfind( dSep)
+  if cnt > 0:
+    rhs = dSep + s[ cnt+1: ]
+    s = s[ :cnt ]
+  else:
+    rhs = ''
+
+  splt=''
+  while s != '':
+    splt= s[ -3: ] + tSep + splt
+    s = s[ :-3 ]
+
+  return(lhs + splt[ :-1 ] + rhs)
+#---------------------------------------------------------------------------
+# End FormatNumber
+#---------------------------------------------------------------------------
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):      # if this is true, then this script is *not* being imported by another Python script.
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Database Info.'
+  Version        = '4.00'
+  VersionDate    = 'Wed Feb 22 11:01:03 CST 2017'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ' Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  OratabFile     = '/etc/oratab'
+  Now            = datetime.now()
+  Ps             = '/bin/ps'
+  Report         = ''
+  SidList        = []
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+
+  ArgParser = OptionParser()
+
+  ArgParser.add_option("-a",  action="store_true", dest="All",       default=False, help="info for all running databases.")
+  ArgParser.add_option("-k",  action="store_true", dest="Keyval",    default=False, help="Key=Value Format")
+  ArgParser.add_option("--v", action="store_true", dest="ShowVer",   default=False, help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  All      = Options.All
+  Keyval   = Options.Keyval
+  ShowVer  = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (All):
+    # Discover all running database instances and add them to the list.
+    Proc = Popen([Ps, '-ef'], bufsize=1, stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+
+    # Stderr is just a placeholder. We redirected stderr to stdout as follows 'stderr=STDOUT'.
+    (Stdout,Stderr) = Proc.communicate()
+    Stdout = Stdout.strip()
+
+    for Line in Stdout.split('\n'):
+      (Splt) = Line.split()
+      Uid, Pid, Ppid, C, Stime, Tty, Time, Cmd = Splt[0], Splt[1], Splt[2], Splt[3], Splt[4], Splt[5], Splt[6] , Splt[7]
+      pos = Cmd.find('ora_pmon_', 0, 9)
+      if (pos >= 0):
+        SidList.append(Cmd[9:])
+      else:
+        continue
+  else:
+    if (argc >= 1):
+      SidList.append(argv[1])
+    elif ('ORACLE_SID' in list(environ.keys())):
+        SidList.append(environ['ORACLE_SID'])
+    else:
+      print('\n  ORACLE_SID not set. Either set ORACLE_SID')
+      print('  or provide an instance name on the command line.')
+      print('\n  For example: %s dbm1' % Cmd)
+      print('\n  exiting...')
+      exit(1)
+
+  Oratab = LoadOratab()
+
+  for Sid in SidList:
+    if (not Keyval):
+      print('\n===========================================================================================')
+      print('%s %76s' % (CmdDesc, Now.strftime("%Y-%m-%d %H:%M")))
+      print('===========================================================================================')
+
+    # Setup the Oracle environment and setup Oracle commands.
+    # --------------------------------------------------------
+    (OracleSid, OracleHome) = SetOracleEnv(Sid, Oratab)
+    if (OracleHome == ''):
+      print('Error setting the ORACLE_HOME using: %s' % Sid)
+      print('This is likely due to a lookup failure in the oratab file.')
+
+      print('\n  Contents of oratab file follows:\n')
+      print('  ORACLE_SID             ORACLE_HOME')
+      print('  ---------------------- -----------------------------------------------')
+      for OraSid in sorted(Oratab.keys()):
+        print('  %-20s   %-50s' % (OraSid, Oratab[OraSid]))
+      exit(1)
+
+    DbState = GetDbState();
+
+    if (DbState != 'OPEN'):
+      print("Database: %s" % OracleSid)
+      print("Database state: %s" % DbState)
+      print("\nSkipping this database...")
+      continue
+
+    # Login to the database and run the queries to collect metrics.
+    # -------------------------------------------------------------
+    RawInfo = CollectInfo(OracleSid)
+
+    # Generate Report
+    # ------------------------------------------------------------
+    if (Keyval):
+      Report = KeyvalReport(RawInfo)
+    else:
+      Report = StandardReport(RawInfo)
+    print("%s" % Report)
+
+    if (not Keyval):
+      print('===========================================================================================')
+      print('End of Report                                  %44s' % (Now.strftime("%Y-%m-%d %H:%M")))
+      print('===========================================================================================')
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
+

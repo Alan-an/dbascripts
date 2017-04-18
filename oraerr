@@ -1,0 +1,220 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        oraerr                                                                           #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints error information for oracle error codes.                                 #
+#                                                                                                #
+#  Usage: oraerr tns 12154                                                                       #
+#         oraerr TNS 12154                                                                       #
+#         oraerr TNS-12154                                                                       #
+#         oraerr tns-12154                                                                       #
+#                                                                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/19/2012 1.00 Randy Johnson    Initial release.                                              #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility. Added -h option.    #
+#                                                                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+import codecs
+
+from signal     import signal
+from signal     import SIGPIPE
+from signal     import SIG_DFL
+from optparse   import OptionParser
+from os         import environ
+from os.path    import basename
+from re         import match
+from re         import search
+from sys        import argv
+from sys        import exit
+
+
+# For handling termination in stdout pipe, ex: when you run: oerrdump | head
+signal(SIGPIPE, SIG_DFL)
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+
+# Def : LoadFacilities()
+# Desc: Parses the ficiliy file and returns a list of lists (2 dim array)
+#       containing:
+#         facility:component:rename:description
+# Args: Facility file name.
+# Retn: FacilitiesDD
+#---------------------------------------------------------------------------
+def LoadFacilities(FacilitiesFile):
+  FacDict = {}
+  FacDD   = {}
+
+  try:
+    facfil = open(FacilitiesFile, 'r')
+  except:
+    print('Cannot open facilities file for read: %s' % FacilitiesFile)
+    exit(1)
+
+  FacFileContents = facfil.read().split('\n')
+  for line in FacFileContents:
+    if (not (search(r'^\s*$', line))):   # skip blank lines
+      if (line.find('#') >= 0):
+        line=line[0:line.find('#')]
+      if (line.count(':') == 3):   # ignore lines that do not contain 3 :'s
+        (Facility, Component, Rename, Description) = line.split(':')
+        FacList = [Facility.strip(), Component.strip(), Rename.strip(), Description.strip()]
+        if (Facility != ''):
+          FacDict = {
+           'Component'   : Component.strip(),
+           'Rename'      : Rename.strip(),
+           'Description' : Description.strip()
+          }
+          FacDD[Facility.strip()] = FacDict
+  return(FacDD)
+# End LoadFacilities()
+
+# Def : LookupMessage()
+# Desc: Parses the ficiliy file and returns a list of lists (2 dim array)
+#       containing:
+#         facility:component:rename:description
+# Args: Facility file name.
+# Retn: FacilitiesDD
+#---------------------------------------------------------------------------
+def LookupMessage(MessagesFile, ErrCode):
+  Msg         = []
+  HeaderFound = False
+
+  try:
+    ###! msgfil = open(MessagesFile, 'r')
+    msgfil = codecs.open(MessagesFile, mode='r', encoding='ISO-8859-1', errors='strict', buffering=1)
+  except:
+    print('Cannot open Messages file for read: %s' % MessagesFile)
+    exit(1)
+
+  MsgFileContents = msgfil.readlines()
+  for line in MsgFileContents:
+    # lines I'm looking for look like this "00003, 00000, "INTCTL: error while se..."
+    # So just looking for something that starts with a string of digits and contains
+    # the error code I'm looking for.
+    if (HeaderFound):
+        matchObj = match(r'//,*', line)
+        if (matchObj):
+          Msg.append(line.strip())
+        else:
+          return(Msg)
+    else:
+      matchObj = match('[0]*' + ErrCode + ',', line)
+      if (matchObj):
+          ErrCode = matchObj.group()
+          ErrCode = ErrCode[0:ErrCode.find(',')]
+          Msg.append(line.strip())
+          HeaderFound = True
+
+  # If we get this far then we couldn't find the error code. Let's strip off leading
+  # 0's and try one more time. This is necessary for RMAN errors for some reason.
+  ErrCode = str(int(ErrCode))
+  for line in MsgFileContents:
+    if (HeaderFound):
+        matchObj = match(r'//,*', line)
+        if (matchObj):
+          Msg.append(line.strip())
+        else:
+          return(Msg)
+    else:
+      matchObj = match('[0]*' + ErrCode + ',', line)
+      if (matchObj):
+          ErrCode = matchObj.group()
+          ErrCode = ErrCode[0:ErrCode.find(',')]
+          Msg.append(line.strip())
+          HeaderFound = True
+          
+  return(Msg)
+# End LookupMessage()
+
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+# --------------------------------------
+# ---- Begin Main Program --------------
+# --------------------------------------
+
+if (__name__ == '__main__'):
+  Cmd  = basename(argv[0])
+  argc = len(argv) - 1
+
+  Usage  = 'Usage: ' + Cmd + ' facility-error [-d]'
+  Usage += '\n   ex: ' + Cmd + ' tns-12154\n'
+  Usage += '\nFacility is identified by the prefix string in the error message.'
+  Usage += '\nFor example, if you get ORA-7300, "ora" is the facility and "7300"'
+  Usage += '\nis the error.  So you should type "' + Cmd + ' ora-7300".'
+  Usage += '\n'
+  Usage += '\nIf you get LCD-111, type "' + Cmd + ' lcd-111", and so on.'
+  Usage += '\n\nOther valid forms include:'
+  Usage += '\n  ' + Cmd + ' tns 12154'
+  Usage += '\n  ' + Cmd + ' TNS 12154'
+  Usage += '\n  ' + Cmd + ' TNS-12154'
+  Usage += '\n  ' + Cmd + ' tns-12154'
+
+  if ('-h' in argv):
+    print(Usage)
+    exit()
+
+  if 'ORACLE_HOME' in list(environ.keys()):
+    if environ['ORACLE_HOME'] == '':
+      print('ORACLE_HOME not set. Exiting...')
+      exit(1)
+    else:
+      OracleHome = environ['ORACLE_HOME']
+  else:
+    print('ORACLE_HOME not set. Exiting...')
+    exit(1)
+	
+  if (argc >= 1 and argc <= 2):
+    if (argc == 1):
+      ErrorCode = argv[1]
+      try:
+        (Facility,ErrCode) = ErrorCode.split('-')
+      except:
+        try:
+          (Facility,ErrCode) = ErrorCode.split(' ')
+        except:
+          print('\nInvalid format.\n')
+          print(Usage)
+          exit(1)
+    elif(argc == 2):
+      Facility = argv[1]
+      ErrCode  = argv[2]
+  else:
+    print('\nInvalid format.\n')
+    print(Usage)
+    exit(1)
+
+  Facility = Facility.lower()
+
+  # Get the facility information from the error msg file
+  FacilitiesFile = OracleHome + '/lib/facility.lis'
+  FacilitiesDD = LoadFacilities(FacilitiesFile)
+  if (not Facility in list(FacilitiesDD.keys())):
+    print('\nInvalid facility: %s' % Facility)
+  else:
+    MessagesFile = OracleHome + '/' + FacilitiesDD[Facility]['Component'] + '/' + 'mesg' + '/' + Facility + 'us.msg'
+    ErrorMessage = LookupMessage(MessagesFile, ErrCode)
+    print('')
+    if (len(ErrorMessage) > 0):
+      for line in (ErrorMessage):
+        print(line)
+    else:
+    	print('Error not found  : ' + ErrorCode)
+    	print('Msg file         : ' + MessagesFile)
+  
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

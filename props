@@ -1,0 +1,135 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        props                                                                             #
+# Author:      Randy Johnson                                                                     #
+# Description: Prints contents of the props$ table (aka database_properties view).               #
+#              Starting to use Python 3.4 with this script.                                      #
+# Usage: props [options]                                                                         #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   -c          include property comments                                                        #
+#   -s          print SQL query                                                                  #
+#   -v          print version info.                                                              #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 03/06/2015 1.00 Randy Johnson    Initial write.                                                #
+# 04/23/2015 1.30 Randy Johnson    Updated print statements for Python 3.4 compatibility. This   #
+#                                  is most commonly changes to the print() and join() functions. #
+# 08/13/2015 3.00 Randy Johnson    Added prompts for username, password, tnsname.                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Database Properties'
+  Version        = '3.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option("-c",  dest="Comments", action="store_true", default=False,           help="include property comments")
+  ArgParser.add_option("-n",  dest="Name",                          default='',    type=str, help="where upper(name) like upper(...)")
+  ArgParser.add_option('--s', dest='Show',     action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',  action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Comments  = Options.Comments
+  Name      = Options.Name
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column name    format a35 heading 'Name'\n"
+  Sql += "column value   format a40 heading 'Value'\n"
+  if (Comments == True):
+    Sql += "column comment format a60 heading 'Comment'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         name\n"
+  Sql += "       , value$ as value\n"
+  if (Comments == True):
+    Sql += "       , comment$ as \"comment\"\n"
+  Sql += "    FROM sys.props$\n"
+  if (Name != ''):
+    Sql += "   WHERE UPPER(name) LIKE '%" + Name.upper() + "%'\n"
+  Sql += "ORDER BY name\n"
+  Sql += "       , value;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

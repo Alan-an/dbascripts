@@ -1,0 +1,347 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:        tabstorage                                                                         #
+# Author:      Randy Johnson                                                                      #
+# Description: Prints 6 different reports 1-3) Table/Partition/Subpartition Storage Detail.       #
+#                     4-6) Table/Partition/Subpartition Storage Summary.                          #
+#                                                                                                 #
+# Usage: tabstorage [options]                                                                     #
+#                                                                                                 #
+# Options:                                                                                        #
+#   -h, --help  show this help message and exit                                                   #
+#   -d          detail report (default is summary report)                                         #
+#   -o OWNERS   where table in table1,table2,table3,...                                           #
+#   -s          print SQL query.                                                                  #
+#   -t TABLES   where owner in owner1,owner2,owner3,...                                           #
+#   -u          subpartition report (default is partition report)                                 #
+#   -v          print version info.                                                               #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who              Change Description                                             #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 09/15/2015 1.00 Randy Johnson    Initial write.                                                 #
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+#from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Table/Partition/Subpartition Storage'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # ------------------------------------------------
+  # Imports that are conditional on Python Version.
+  # ------------------------------------------------
+  if (version_info[0] >= 3):
+    from configparser import SafeConfigParser
+  else:
+    from ConfigParser import SafeConfigParser
+  # ------------------------------------------------
+  
+  ArgParser.add_option('-d',  dest='DetailRpt',       action='store_true', default=False,           help="detail report (default is summary report)")
+  ArgParser.add_option('-o',  dest='Owners',                               default='',    type=str, help="where table in table1,table2,table3,...")
+  ArgParser.add_option('-p',  dest='PartitionRpt',    action='store_true', default=False,           help="Partition report (default is table report)")
+  ArgParser.add_option('-t',  dest='Tables',                               default='',    type=str, help="where owner in owner1,owner2,owner3,...")
+  ArgParser.add_option('-s',  dest='SubpartitionRpt', action='store_true', default=False,           help="subpartition report (default is table report)")
+  ArgParser.add_option('--s', dest='Show',            action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',         action='store_true', default=False,           help="print version info.")
+                                                 
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  DetailRpt       = Options.DetailRpt
+  Owners          = Options.Owners
+  Show            = Options.Show
+  ShowVer         = Options.ShowVer
+  Tables          = Options.Tables
+  PartitionRpt    = Options.PartitionRpt
+  SubpartitionRpt = Options.SubpartitionRpt
+  TableRpt        = True
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (Tables != ''):
+    junk = ''
+    for Table in Tables.split(','):
+      junk = junk + "'" + Table.strip() + "'"
+    Tables = ("', '").join(junk.split("''"))
+
+  if (Owners != ''):
+    junk = ''
+    for Table in Owners.split(','):
+      junk = junk + "'" + Table.strip() + "'"
+    Owners = ("', '").join(junk.split("''"))
+
+  if (PartitionRpt and SubpartitionRpt):
+    print("PartitionRpt (-p) and SubpartitionRpt (-s) cannot be used together.")
+    exit(1)
+
+  if (SubpartitionRpt):
+    TableRpt = False  
+    if (DetailRpt):
+      Sql += "column owner                 format a30             heading 'Owner'\n"
+      Sql += "column table_name            format a30             heading 'Table'\n"
+      Sql += "column partition_name        format a30             heading 'Partition'\n"
+      Sql += "column subpartition_name     format a30             heading 'Subpartition'\n"
+      Sql += "column compression           format a11             heading 'Compression'\n"
+      Sql += "column compress_for          format a16             heading 'Compress Type'\n"
+      Sql += "column mbytes                format 999,999,999.999 heading 'Megabytes'\n"
+      Sql += "\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "         sp.table_owner owner\n"
+      Sql += "       , sp.table_name\n"
+      Sql += "       , sp.partition_name\n"
+      Sql += "       , sp.subpartition_name\n"
+      Sql += "       , INITCAP(sp.compression) compression\n"
+      Sql += "       , INITCAP(sp.compress_for) compress_for\n"
+      Sql += "       , s.bytes/1024/1024 mbytes\n"
+      Sql += "    FROM dba_tab_subpartitions sp\n"
+      Sql += "       , dba_segments s\n"
+      Sql += "   WHERE sp.table_owner        = s.owner(+)\n"
+      Sql += "     AND sp.table_name         = s.segment_name(+)\n"
+      Sql += "     AND sp.subpartition_name  = s.partition_name(+)\n"
+      if (Owners != ''):
+        Sql += "     AND UPPER(sp.table_owner) IN (" + Owners.upper() + ")\n"
+      if (Tables != ''):
+        Sql += "     AND UPPER(sp.table_name)  IN (" + Tables.upper() + ")\n"
+      Sql += "     AND s.segment_type        = 'TABLE SUBPARTITION'\n"
+      Sql += "ORDER BY sp.table_owner\n"
+      Sql += "       , s.bytes;"
+    else:
+      Sql += "column owner                 format a30             heading 'Owner'\n"
+      Sql += "column table_name            format a30             heading 'Table'\n"
+      Sql += "column partition_name        format a30             heading 'Partition'\n"
+      Sql += "column subpartition_name     format a30             heading 'Subpartition'\n"
+      Sql += "column subpartition_count    format 999,999         heading 'Subpartitions'\n"
+      Sql += "column min_subpartn_mbytes   format 999,999,999.999 heading 'Min MB'\n"
+      Sql += "column avg_subpartn_mbytes   format 999,999,999.999 heading 'Avg MB'\n"
+      Sql += "column max_subpartn_mbytes   format 999,999,999.999 heading 'Max MB'\n"
+      Sql += "\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "         sub.table_owner owner\n"
+      Sql += "       , sub.table_name table_name\n"
+      Sql += "       , sub.partition_name partition_name\n"
+      Sql += "       , COUNT(*) subpartition_count\n"
+      Sql += "       , ROUND(AVG(seg.bytes)/1024/1024,3) min_subpartn_mbytes\n"
+      Sql += "       , ROUND(MIN(seg.bytes)/1024/1024,3) avg_subpartn_mbytes\n"
+      Sql += "       , ROUND(MAX(seg.bytes)/1024/1024,3) max_subpartn_mbytes\n"
+      Sql += "    FROM (SELECT owner\n"
+      Sql += "               , segment_name\n"
+      Sql += "               , partition_name\n"
+      Sql += "               , bytes\n"
+      Sql += "            FROM dba_segments\n"
+      Sql += "           WHERE 1=1\n"
+      if (Owners != ''):
+        Sql += "             AND UPPER(owner) IN (" + Owners.upper() + ")\n"
+      if (Tables != ''):
+        Sql += "             AND UPPER(segment_name)  IN (" + Tables.upper() + ")\n"
+      Sql += "         ) seg\n"
+      Sql += "       , dba_tab_subpartitions sub\n"
+      Sql += "   WHERE seg.owner          = sub.table_owner\n"
+      Sql += "     AND seg.segment_name   = sub.table_name\n"
+      Sql += "     AND seg.partition_name = sub.subpartition_name\n"
+      Sql += "GROUP BY sub.table_owner\n"
+      Sql += "       , sub.table_name\n"
+      Sql += "       , sub.partition_name\n"
+      Sql += "ORDER BY sub.table_owner\n"
+      Sql += "       , sub.table_name\n"
+      Sql += "       , sub.partition_name;"
+  
+  if (PartitionRpt):
+    TableRpt = False
+    if (DetailRpt):
+      Sql += "column owner                 format a30             heading 'Owner'\n"
+      Sql += "column table_name            format a30             heading 'Table'\n"
+      Sql += "column partition_name        format a30             heading 'Partition'\n"
+      Sql += "column compression           format a11             heading 'Compression'\n"
+      Sql += "column compress_for          format a16             heading 'Compress Type'\n"
+      Sql += "column mbytes                format 999,999,999.999 heading 'Megabytes'\n"
+      Sql += "\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "         prt.table_owner owner\n"
+      Sql += "       , prt.table_name table_name\n"
+      Sql += "       , prt.partition_name partition_name\n"
+      Sql += "       , INITCAP(prt.compression) compression\n"
+      Sql += "       , INITCAP(prt.compress_for) compress_for\n"
+      Sql += "       , ROUND(seg.bytes/1024/1024,3) mbytes\n"
+      Sql += "    FROM (SELECT owner\n"
+      Sql += "               , segment_name\n"
+      Sql += "               , partition_name\n"
+      Sql += "               , bytes\n"
+      Sql += "            FROM dba_segments\n"
+      Sql += "           WHERE 1=1\n"
+      if (Owners != ''):
+        Sql += "             AND UPPER(owner) IN (" + Owners.upper() + ")\n"
+      if (Tables != ''):
+        Sql += "             AND UPPER(segment_name)  IN (" + Tables.upper() + ")\n"
+      Sql += "         ) seg\n"
+      Sql += "       , dba_tab_partitions prt\n"
+      Sql += "   WHERE seg.owner          = prt.table_owner\n"
+      Sql += "     AND seg.segment_name   = prt.table_name\n"
+      Sql += "     AND seg.partition_name = prt.partition_name\n"
+      Sql += "ORDER BY prt.table_owner\n"
+      Sql += "       , prt.table_name\n"
+      Sql += "       , prt.partition_name;"
+    else:
+      Sql += "column owner                 format a30             heading 'Owner'\n"
+      Sql += "column table_name            format a30             heading 'Table'\n"
+      Sql += "column partition_count       format 999,999         heading 'Partitions'\n"
+      Sql += "column min_partn_mbytes      format 999,999,999.999 heading 'Min MB'\n"
+      Sql += "column avg_partn_mbytes      format 999,999,999.999 heading 'Avg MB'\n"
+      Sql += "column max_partn_mbytes      format 999,999,999.999 heading 'Max MB'\n"
+      Sql += "\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "         prt.table_owner owner\n"
+      Sql += "       , prt.table_name table_name\n"
+      Sql += "       , COUNT(*) partition_count\n"
+      Sql += "       , ROUND(AVG(seg.bytes)/1024/1024,3) min_partn_mbytes\n"
+      Sql += "       , ROUND(MIN(seg.bytes)/1024/1024,3) avg_partn_mbytes\n"
+      Sql += "       , ROUND(MAX(seg.bytes)/1024/1024,3) max_partn_mbytes\n"
+      Sql += "    FROM (SELECT owner\n"
+      Sql += "               , segment_name\n"
+      Sql += "               , partition_name\n"
+      Sql += "               , bytes\n"
+      Sql += "            FROM dba_segments\n"
+      Sql += "           WHERE 1=1\n"
+      if (Owners != ''):
+        Sql += "             AND UPPER(owner) IN (" + Owners.upper() + ")\n"
+      if (Tables != ''):
+        Sql += "             AND UPPER(segment_name)  IN (" + Tables.upper() + ")\n"
+      Sql += "         ) seg\n"
+      Sql += "       , dba_tab_partitions prt\n"
+      Sql += "   WHERE seg.owner          = prt.table_owner\n"
+      Sql += "     AND seg.segment_name   = prt.table_name\n"
+      Sql += "     AND seg.partition_name = prt.partition_name\n"
+      Sql += "GROUP BY prt.table_owner\n"
+      Sql += "       , prt.table_name\n"
+      Sql += "ORDER BY prt.table_owner\n"
+      Sql += "       , prt.table_name;"
+
+  if (TableRpt):
+    if (DetailRpt):
+      Sql += "column owner                 format a30             heading 'Owner'\n"
+      Sql += "column table_name            format a30             heading 'Table'\n"
+      Sql += "column compression           format a11             heading 'Compression'\n"
+      Sql += "column compress_for          format a16             heading 'Compress Type'\n"
+      Sql += "column mbytes                format 999,999,999.999 heading 'Megabytes'\n"
+      Sql += "\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "         tab.owner owner\n"
+      Sql += "       , tab.table_name table_name\n"
+      Sql += "       , INITCAP(tab.compression) compression\n"
+      Sql += "       , INITCAP(tab.compress_for) compress_for\n"
+      Sql += "       , ROUND(seg.bytes/1024/1024,3) mbytes\n"
+      Sql += "    FROM (SELECT owner\n"
+      Sql += "               , segment_name\n"
+      Sql += "               , bytes\n"
+      Sql += "            FROM dba_segments\n"
+      Sql += "           WHERE 1=1\n"
+      if (Owners != ''):
+        Sql += "             AND UPPER(owner) IN (" + Owners.upper() + ")\n"
+      if (Tables != ''):
+        Sql += "             AND UPPER(segment_name) IN (" + Tables.upper() + ")\n"
+      Sql += "         ) seg\n"
+      Sql += "       , dba_tables tab\n"
+      Sql += "   WHERE seg.owner = tab.owner\n"
+      Sql += "     AND seg.segment_name = tab.table_name\n"
+      Sql += "ORDER BY tab.owner\n"
+      Sql += "       , tab.table_name;"
+    else:
+      Sql += "column owner                 format a30             heading 'Owner'\n"
+      Sql += "column table_name            format a30             heading 'Table'\n"
+      Sql += "column mbytes                format 999,999,999.999 heading 'Megabytes'\n"
+      Sql += "\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "         tab.owner owner\n"
+      Sql += "       , tab.table_name table_name\n"
+      Sql += "       , ROUND(SUM(seg.bytes)/1024/1024,3) mbytes\n"
+      Sql += "    FROM (SELECT owner\n"
+      Sql += "               , segment_name\n"
+      Sql += "               , bytes\n"
+      Sql += "            FROM dba_segments\n"
+      Sql += "           WHERE 1=1\n"
+      if (Owners != ''):
+        Sql += "             AND UPPER(owner) IN (" + Owners.upper() + ")\n"
+      if (Tables != ''):
+        Sql += "             AND UPPER(segment_name) IN (" + Tables.upper() + ")\n"
+      Sql += "         ) seg\n"
+      Sql += "       , dba_tables tab\n"
+      Sql += "   WHERE seg.owner = tab.owner\n"
+      Sql += "     AND seg.segment_name = tab.table_name\n"
+      Sql += "GROUP BY tab.owner\n"
+      Sql += "       , tab.table_name\n"
+      Sql += "ORDER BY tab.owner\n"
+      Sql += "       , tab.table_name;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

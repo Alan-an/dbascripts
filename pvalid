@@ -1,0 +1,141 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        pvalid                                                                            #
+# Author:      Randy Johnson                                                                     #
+# Description: Display valid parameter values.                                                   #
+#                                                                                                #
+# Usage: pvalid [options]                                                                        #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   -n NAME     where name like ...                                                              #
+#   -s          print SQL query.                                                                 #
+#   -v          print version info.                                                              #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility. Added prompts for   #
+#                                  username, password, tnsname.                                  #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ValidateDate
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Valid Parameter Values'
+  Version        = '2.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  InstList       = []
+  
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-n',  dest='Name',                            default='',    type=str, help="where name like ...")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Name      = Options.Name
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column pvalid_par#    format 9999  heading 'Parm# '\n"
+  Sql += "column ord            format 9999  heading 'Ordinal'\n"
+  Sql += "column pvalid_value   format a30   heading 'Value'\n"
+  Sql += "column pvalid_name    format a50   heading 'Parameter'\n"
+  Sql += "column pvalid_default format a20   heading 'Default'\n"
+  Sql += "\n"
+  Sql += "break on pvalid_par# skip 1\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         parno_kspvld_values     pvalid_par#\n"
+  Sql += "       , name_kspvld_values      pvalid_name\n"
+  Sql += "       , ordinal_kspvld_values   ord\n"
+  Sql += "       , value_kspvld_values     pvalid_value\n"
+  Sql += "       , DECODE(isdefault_kspvld_values, 'FALSE', '', 'DEFAULT' ) pvalid_default\n"
+  Sql += "    FROM sys.x$kspvld_values\n"
+  if (Name != ''):
+    Sql += "   WHERE UPPER(name_kspvld_values) LIKE '%"+ Name.upper()  +"%'\n"
+  Sql += "ORDER BY pvalid_par#\n"
+  Sql += "       , pvalid_default\n"
+  Sql += "       , ord\n"
+  Sql += "       , pvalid_Value;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+    if (not(ConnStr.upper().find(' AS SYSDBA') >= 0)):
+      ConnStr += ' AS SYSDBA'
+  
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,120 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        dbcomps                                                                          #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints database component version information from product_component_version,    #
+#               and dba_registry_history.                                                        #
+#                                                                                                #
+#  Usage: dbcomps [options]                                                                      #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -s          print SQL query.                                                                #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 12/09/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Db Components'
+  Version        = '1.00'
+  VersionDate    = 'Wed Dec  9 17:17:35 CST 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  if (Options.ShowVer):
+    Banner = CmdDesc + ', Release ' + Version + ' Production, ' + VersionDate
+    print('\n%s' % Banner)
+    exit()
+
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+    
+  Sql += "column comp_name      format a45            heading 'Name'\n"
+  Sql += "column version        format a15            heading 'Version'\n"
+  Sql += "column status         format a25            heading 'Status'\n"
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       comp_name\n"
+  Sql += "     , version\n"
+  Sql += "     , status\n"
+  Sql += "  FROM dba_registry\n"
+  Sql += " ORDER BY comp_name;\n"
+  Sql +=" \n"
+  
+  if (Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+  else:
+    # Check/setup the Oracle environment
+    if (not('ORACLE_SID' in list(environ.keys()))):
+      print('ORACLE_SID is required.')
+      exit(1)
+    else:
+      # Set the ORACLE_HOME just in case it isn't set already.
+      if (not('ORACLE_HOME' in list(environ.keys()))):
+        (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+  
+    # Parse the connect string if any, prompt for username, password if needed.
+    if (len(args) > 0 and Show == False):
+      InStr = args[0]
+      ConnStr = ParseConnectString(InStr)
+
+    # Execute the report
+    if (ConnStr != ''):
+      (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+    else:
+      (Stdout) = RunSqlplus(Sql, ErrChk)
+
+    # Print the report
+    if (Stdout != ''):
+      print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

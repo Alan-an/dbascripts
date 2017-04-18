@@ -1,0 +1,127 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        fvdef                                                                             #
+# Author:      Randy Johnson                                                                     #
+# Description: Dumps the SQL definition for Fixed V$ and GV$ views.                              #
+#                                                                                                #
+# Usage: fvdef [options]                                                                         #
+#                                                                                                #
+#   -h, --help   show this help message and exit                                                 #
+#   -n VIEWNAME  where view_name = ...                                                           #
+#   --s          print SQL query.                                                                #
+#   --v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 10/13/2016 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import RunRman
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+from Oracle       import PrintError
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Fixed V$ View Definitions'
+  Version        = '1.00'
+  VersionDate    = 'Thu Oct 13 20:55:03 CST 2016'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Rcv            = ''
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-n',  dest='ViewName',                        default='',    type=str,  help="where view_name = '...'")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,            help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,            help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  ViewName   = Options.ViewName
+  Show       = Options.Show
+  ShowVer    = Options.ShowVer
+
+  if (ViewName != ''):
+    Sql += "column view_definition    format a120 heading 'View Text' wrap\n"
+    Sql += "set pagesize 10000\n"
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         view_definition\n"
+    Sql += "    FROM v$fixed_view_definition\n"
+    Sql += "   WHERE upper(view_name) = '" + ViewName.upper() + "';"
+  else:
+    Sql += "column view_name          format a30 heading 'View Name'\n"
+    Sql += "column view_definition    format a90 heading 'View Definition' wrap\n"
+    Sql += "break on view_name\n"
+    Sql += "set pagesize 10000\n"
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         view_name\n"
+    Sql += "       , view_definition\n"
+    Sql += "    FROM v$fixed_view_definition\n"
+    Sql += "ORDER BY view_definition;"
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+  
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+  
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+  
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout == ''):
+    print("\nView not found.")
+  else:
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

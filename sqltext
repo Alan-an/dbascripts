@@ -1,0 +1,191 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        sqltext                                                                           #
+# Author:      Randy Johnson                                                                     #
+# Description: Finds a SQL statement using a piece of the sql_text or its sql_id, and prints the #
+#              full SQL Text listing of the statement.                                           #
+#                                                                                                #
+# Usage: sqltext [options]                                                                       #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   -a          search the AWR (default is v$sql)                                                #
+#   -i SQLID    value for sql_id                                                                 #
+#   -t SQLTEXT  value for sql_text                                                               #
+#   -g          search gv$... (default is v$...)                                                 #
+#   -r ROWS     limit output to nnn rows (default 0=off)                                         #
+#   -s          print SQL query.                                                                 #
+#   -v          print version info.                                                              #
+#                                                                                                #
+#   All options may be combined except -a and -g.                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/31/2014 1.00 Randy Johnson    Initial write.                                                #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 07/17/2015 2.20 Randy Johnson    Added prompts for username, password, tnsname.                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Find and print full SQL Text'
+  Version        = '2.20'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-a',  dest='Awr',        action='store_true', default=False,           help="search the AWR (default is v$sql)")
+  ArgParser.add_option('-g',  dest='Global',     action='store_true', default=False,           help="search gv$... (default is v$...)")
+  ArgParser.add_option("-i",  dest="SqlId",                           default='',    type=str, help="value for sql_id")
+  ArgParser.add_option('-r',  dest='Rows',                            default=0,     type=int, help="limit output to nnn rows (default 0=off)")
+  ArgParser.add_option("-t",  dest="SqlText",                         default='',    type=str, help="value for sql_text",)
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+
+  Awr       = Options.Awr
+  Global    = Options.Global
+  Rows      = str(Options.Rows)
+  Show      = Options.Show
+  SqlId     = Options.SqlId
+  SqlText   = Options.SqlText
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (Awr == True and Global == True):
+    print("\nAWR option (-a) and Global option (-g) may not be used together.")
+    exit(1)
+
+  if (Awr): # Go to the DBA_HIST_SQLTEXT table to search for the SQL
+    Sql += "column sql_text    format a150          heading 'SQL Text' word_wrap\n"
+    Sql += "column sql_id      format a13           heading 'SQL ID'\n"
+    Sql += "\n"
+    Sql += "set long     999999999  \n"
+    Sql += "set pagesize 10000\n"
+    Sql += "\n"
+    Sql += "break on sql_id skip 1\n"
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         sql_id\n"
+    Sql += "       , sql_text\n"
+    Sql += "    FROM dba_hist_sqltext\n"
+    Sql += "   WHERE sql_text NOT LIKE '%" + SqlHeader + "%'\n"
+    if (SqlText != ''):
+      Sql += "     AND UPPER(sql_text) LIKE '%" + SqlText.upper() + "%\'\n"
+    if (SqlId != ''):
+      Sql += "     AND sql_id LIKE '%" + SqlId + "%'\n"
+    if (Rows != '0'):
+      Sql += "     AND rownum <= " + Rows + "\n"
+    Sql += "ORDER BY sql_id;\n"
+  else: # Go to the V$SQLTEXT or GV$SQLTEXT table to search for the SQL
+    if (Global):
+      Sql += "column inst_id     format 999           heading 'Inst'\n"
+    Sql += "column sql_text    format a150          heading 'SQL Text' word_wrap\n"
+    Sql += "column sql_id      format a13           heading 'SQL ID'\n"
+    Sql += "\n"
+    Sql += "set long     999999999  \n"
+    Sql += "set pagesize 10000\n"
+    Sql += "\n"
+    if (Global):
+      Sql += "break on inst_id on sql_id skip 1\n"
+    else:
+      Sql += "break on sql_id skip 1\n" 
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    if (Global):
+      Sql += "         inst_id\n"
+      Sql += "       , sql_id\n"
+    else:
+      Sql += "         sql_id\n"
+    Sql += "       , sql_fulltext sql_text\n"
+    if (Global):
+      Sql += "    FROM gv$sql\n"
+    else:
+      Sql += "    FROM v$sql\n"
+    Sql += "   WHERE sql_fulltext NOT LIKE '%" + SqlHeader + "%'\n"
+    if (SqlText != ''):
+      Sql += "     AND UPPER(sql_fulltext) LIKE '%" + SqlText.upper() + "%\'\n"
+    if (SqlId != ''):
+      Sql += "     AND sql_id LIKE '%" + SqlId + "%'\n"
+    if (Rows != '0'):
+      Sql += "     AND rownum <= " + Rows + "\n"
+    if (Global):
+      Sql += "ORDER BY inst_id\n"
+      Sql += "       , sql_id;\n"
+    else:
+      Sql += "ORDER BY sql_id;\n"
+  
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

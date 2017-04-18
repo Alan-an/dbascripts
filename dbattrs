@@ -1,0 +1,142 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        dbattrs                                                                           #
+# Author:      Randy Johnson                                                                     #
+# Description: Flips v$database on its side and prints all name, value pairs.                    #
+#                                                                                                #
+# Usage: dbattrs [options]                                                                       #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   --s         print SQL query.                                                                 #
+#   --v         print version info.                                                              #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/16/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+from Oracle       import PrintError
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Database Attributes'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  ConnStr        = ''
+  PageSep        = '!!!PAGESEP!!!'
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False, help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False, help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Show        = Options.Show
+  ShowVer     = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "set linesize 80\n"
+  Sql += "describe v$database\n"
+  Sql += "prompt " + PageSep + "\n"
+  Sql += "\n"
+  Sql += "set colsep '~'\n"
+  Sql += "set linesize 32767\n"
+  Sql += "set pagesize 0\n"
+  Sql += "alter session set nls_date_format = 'yyyy-mm-dd hh24:mi:ss';\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         *\n"
+  Sql += "    FROM v$database;"
+  
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  
+  if (Stdout != ''):
+    FieldList = []
+    ValueList = []
+    DbDict    = {}
+     
+    # Parse the table description and build a list of field names
+    TableDesc = Stdout.split(PageSep)[0].strip().split('\n')[2:]
+    for line in TableDesc:
+      FieldList.append(line.split()[0])
+      
+    # Parse the query results and build a list of values
+    ValueSet = Stdout.split(PageSep)[1].strip()
+    for value in ValueSet.split('~'):
+      ValueList.append(value.strip())
+      
+    Count = len(ValueList)
+
+    for i in range(0,Count):
+      DbDict[FieldList[i]] = ValueList[i]
+
+    print('\nName                                     Value                                             ')
+    print('---------------------------------------- --------------------------------------------------')
+    for key in sorted(DbDict.keys()):
+      print("%-40s %-50s" % (key, DbDict[key]))
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

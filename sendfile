@@ -1,0 +1,224 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        sendfile                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Sends a simple text file as attachment using sendmail. Returns the return code   #
+#               from the sendmail session. Any return code not equal to 0 is an error.           #
+#                                                                                                #
+#  sendfile.py  File Address [[-v][--verbose]]                                                   #
+#         sendfile.py  File  Address1,Address2,Address3,...                                      #
+#      ** sendfile.py  File 'Address1, Address2, Address3, ...'                                  #
+#                                                                                                #
+#  Where:                                                                                        #
+#    File    : is the name of the file you want to send as an attachment.                        #
+#    Address : is the email address you want to send the file to.                                #
+#                                                                                                #
+#   ** You may provide a comma delimited list of destination addresses but                       #
+#      if there are any embedded spaces in the list, the list must be                            #
+#      enclosed in quotes ('|")                                                                  #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/06/2012 1.00 Randy Johnson    Initial release.                                              #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+import os
+
+from getpass             import getuser
+from optparse            import OptionParser
+from os.path             import basename
+from sys                 import version_info
+from sys                 import exit
+from sys                 import argv
+from socket              import gethostname
+from subprocess          import Popen
+from subprocess          import PIPE
+from subprocess          import STDOUT
+
+if (version_info[0] >= 3):
+  from email.mime.multipart import MIMEMultipart
+  from email.mime.base      import MIMEBase
+  from email.mime.text      import MIMEText
+  from email.utils          import COMMASPACE
+  from email.utils          import formatdate
+  from email                import encoders as Encoders
+else:
+  from email.MIMEMultipart  import MIMEMultipart
+  from email.MIMEBase       import MIMEBase
+  from email.MIMEText       import MIMEText
+  from email.Utils          import COMMASPACE
+  from email.Utils          import formatdate
+  from email                import Encoders
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+
+# Def  : CreateEmailMsg()
+# Desc : Creates a multi-part MIME message.
+# Args : fromAddr, toAddr, Subject, Body, FileList, server="localhost"
+# Retn : msg = Message object containing the multi-part MIME email message.
+#---------------------------------------------------------------------------
+def createEmailMsg(fromAddr, toAddr, Subject, Body, FileList, server="localhost"):
+  mimeBoundry = '=== This is the boundary between parts of the message. ==='
+
+  assert type(toAddr)   ==list
+  assert type(FileList) ==list
+  
+  msg = MIMEMultipart()
+  msg['From'] = fromAddr
+  msg['To'] = COMMASPACE.join(toAddr)
+  msg['Date'] = formatdate(localtime=True)
+  msg['Subject'] = Subject
+  
+  msg.attach( MIMEText(Body) )
+  
+  for Filename in FileList:
+    part = MIMEBase('application', "octet-stream")
+    part.set_payload(open(Filename,"rb").read())
+    Encoders.encode_base64(part)
+    part.add_header('Content-Disposition', 'attachment; filename="%s"' % os.path.basename(Filename))
+    msg.attach(part)
+  return(msg)
+# End CreateEmailMessage()
+
+
+# Def : splitThousands()
+# Desc: Simple function to format numbers with commas to separate thousands.
+# Args: s    = numeric_string
+#       tSep = thousands_separation_character (default is ',')
+#       dSep = decimal_separation_character (default is '.')
+# Retn: formatted string
+#---------------------------------------------------------------------------
+def splitThousands( s, tSep=',', dSep='.'):
+  '''Splits a general float on thousands. GIGO on general input'''
+  if s == None:
+    return(0)
+  if not isinstance( s, str ):
+    s = str( s )
+
+  cnt=0
+  numChars=dSep+'0123456789'
+  ls=len(s)
+  while cnt < ls and s[cnt] not in numChars: cnt += 1
+
+  lhs = s[ 0:cnt ]
+  s = s[ cnt: ]
+  if dSep == '':
+    cnt = -1
+  else:
+    cnt = s.rfind( dSep )
+  if cnt > 0:
+    rhs = dSep + s[ cnt+1: ]
+    s = s[ :cnt ]
+  else:
+    rhs = ''
+
+  splt=''
+  while s != '':
+    splt= s[ -3: ] + tSep + splt
+    s = s[ :-3 ]
+
+  return(lhs + splt[ :-1 ] + rhs)
+# End splitThousands
+
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd = basename(argv[0])
+
+  # Process command line options
+  # ----------------------------------
+  Usage         = Cmd + '  File Address [[-v][--verbose]]\n'
+  Usage        += '       ' + Cmd + '  File Address1,Address2,Address3,...\n'
+  Usage        += '    ** ' + Cmd + '  File \'Address1, Address2, Address3, ...\'\n\n'
+  Usage        += 'Where:\n'
+  Usage        += '  File    : is the name of the file you want to send as an attachment.\n'
+  Usage        += '  Address : is the email address you want to send the file to.\n\n'
+  Usage        += ' ** You may provide a comma delimited list of destination addresses but\n'
+  Usage        += '    if there are any embedded spaces in the list, the list must be\n'
+  Usage        += '    enclosed in quotes (\'|\")'
+
+  parser = OptionParser(usage=Usage)
+  parser.add_option("-v", action="store_true",  dest="Verbose", default=False,  help="Verbose mode shows stdout from sendmail session.")
+  Options, args = parser.parse_args()
+
+  hostname      = gethostname()
+  username      = getuser()
+  procRC        = 0
+  msgSizeLimit  = 26214400 # 25M
+  Verbose       = Options.Verbose
+
+  if(Verbose):
+    try: 
+      argv.remove('-v')
+    except:
+      pass
+
+  argc = len(argv)
+  if argc != 3:
+    print(Usage)
+    exit(1)
+  else:
+    File    = argv[1]
+    Address = argv[2]
+  
+  FileList = File.split(',')
+  for Filename in FileList:
+    try:
+      File = open(Filename, 'r')
+    except:
+      print("\nCannot open input file for read: " + Filename)
+      exit(1)
+
+  AddressList = Address.split(',')
+  Subject     = 'Attached file: ' + repr(FileList) 
+  Body        = 'File sent from ' + username + ' user account using ' + Cmd + ' command.'
+  msg         = createEmailMsg(username + '@' + hostname, AddressList, Subject, Body, FileList)
+  
+  msgText = msg.as_string()
+  if (len(msgText) >= msgSizeLimit):
+    msgSize      = splitThousands(len(msgText))
+    msgSizeLimit = splitThousands(msgSizeLimit)
+    print('\nMessage size', msgSize, 'is larger than email size limit of', msgSizeLimit)
+    exit(1)
+  
+  if (Verbose):
+    proc= Popen(['/usr/sbin/sendmail', '-t', '-v'], stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+    print(msg.as_string())
+  else:
+    proc= Popen(['/usr/sbin/sendmail', '-t'], stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+  
+  # Write the contents of the mail message to sendmail's stdin and close.
+  proc.stdin.write(msg.as_string())
+  proc.stdin.close()
+  
+  # Catch stdout/stderr output.
+  stdOut = proc.stdout.read()
+  
+  # Get the return code from sendmail
+  procRC = proc.poll()
+    
+  if (Verbose):
+    print('\nstdout & stderr from sendmail session follows...\n')
+    print(stdOut)
+    print('\nEnd sendmail session.\n')
+    print('exiting', Cmd)
+
+  exit(procRC)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

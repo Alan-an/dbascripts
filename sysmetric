@@ -1,0 +1,176 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        sysmetric                                                                        #
+#  Author:      Randy Johnson                                                                    #
+#  Description: This script prints a report from v$sysmetric and gv$sysmetric.                   #
+#                                                                                                #
+#  Usage: sysmetric [options]                                                                    #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help    show this help message and exit                                               #
+#    -g            search gv$sysemtric (default is v$sysmetric)                                  #
+#    -i INSTANCES  where inst_id in 1,2,3,...                                                    #
+#    -m METRIC     where upper(metric_name) like '%CPU%'                                         #
+#    -s            print SQL query.                                                              #
+#    -v            print version info.                                                           #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/31/2015 1.00 Randy Johnson    Initial write.                                                #
+# 09/04/2015 1.01 Randy Johnson    Minor fix to sql where column format for METRIC was incorrect.#
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Report System Metrics'
+  Version        = '1.01'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  InstList       = []
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-g', dest='Global',      action='store_true', default=False,            help="search gv$sysemtric (default is v$sysmetric)")
+  ArgParser.add_option('-i', dest='Instances',                        default='',    type=str,  help="where inst_id in 1,2,3,...")
+  ArgParser.add_option('-m', dest='Metric',                           default='',    type=str,  help="where upper(metric_name) like '%CPU%'")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,            help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,            help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Global    = Options.Global
+  Show      = Options.Show
+  Instances = Options.Instances
+  Metric    = Options.Metric
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+    
+  # Assume gv$sysmetric if an instance list is specified.
+  if (Global == False and Instances != ''):
+    Global = True
+
+  if(Instances != ''):
+    InstList = Instances.split(',')
+    try:
+      if (version_info[0] >= 3):
+        InstList = list(map(int, InstList))
+        InstList = list(map(str, InstList))
+      else:
+        InstList = map(int, InstList)
+        InstList = map(str, InstList)
+    except:
+      print("Instance list must be in integer form, eg. -i 1,2,3,4")
+      exit(1)
+
+  Sql += "column inst_id     format 9999            heading 'Inst'\n"
+  Sql += "column begin_time  format a19             heading 'Begin Time'\n"
+  Sql += "column end_time    format a19             heading 'End Time'\n"
+  Sql += "column metric_name format a60             heading 'Metric'\n"
+  Sql += "column metric_unit format a30             heading 'Unit'\n"
+  Sql += "column value       format 999,999,999,999 heading 'Value'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         inst_id\n"
+    Sql += "       , TO_CHAR(begin_time , 'YYYY-MM-DD HH24:MI:SS') begin_time\n"
+  else:
+    Sql += "         TO_CHAR(begin_time , 'YYYY-MM-DD HH24:MI:SS') begin_time\n"
+  Sql += "       , TO_CHAR(end_time   , 'YYYY-MM-DD HH24:MI:SS') end_time\n"
+  Sql += "--       , intsize_csec\n"
+  Sql += "--       , group_id\n"
+  Sql += "--       , metric_id\n"
+  Sql += "       , value\n"
+  Sql += "       , metric_name\n"
+  Sql += "--       , metric_unit\n"
+  if (Global):
+    Sql += "    FROM gv$sysmetric\n"
+  else:
+    Sql += "    FROM v$sysmetric\n"
+  Sql += "   WHERE group_id = 2\n"
+  if (Metric != ''):
+    Sql += "     AND upper(metric_name) LIKE '%" + Metric.upper() + "%'\n"
+  if (Instances != ''):
+    Sql += "     AND inst_id IN (" + Instances + ")\n"
+  if (Global):
+    Sql += "ORDER BY inst_id\n"
+    Sql += "       , begin_time\n"
+    Sql += "       , metric_name;\n"
+  else:
+    Sql += "ORDER BY begin_time\n"
+    Sql += "       , metric_name;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

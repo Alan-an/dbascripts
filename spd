@@ -1,0 +1,128 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        spd                                                                              #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report of DBA_SQL_PLAN_DIRECTIVES.                                      #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/29/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'SQL Plan Directives'
+  Version        = '1.00'
+  VersionDate    = 'Mon Sep 28 13:35:14 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-s',  dest='SortBy',                       default='',    type=str, help="order by 1,2,3 ... (default = created)")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  SortBy    = Options.SortBy
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column directive_id   format 999999999999999999999999 heading 'Directive ID'\n"
+  Sql += "column type           format a16                      heading 'Type'\n"
+  Sql += "column enabled        format a7                       heading 'Enabled'\n"
+  Sql += "column state          format a10                      heading 'State'\n"
+  Sql += "column auto_drop      format a8                       heading 'AutoDrop'\n" 
+  Sql += "column reason         format a36                      heading 'Reason'\n"
+  Sql += "column created        format a19                      heading 'Created'\n"
+  Sql += "column last_modified  format a19                      heading 'Last Mod.'\n"
+  Sql += "column last_used      format a19                      heading 'Last Used'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         directive_id\n"
+  Sql += "       , type\n"
+  Sql += "       , INITCAP(enabled) enabled\n"
+  Sql += "       , INITCAP(state) state\n"
+  Sql += "       , INITCAP(auto_drop) auto_drop\n"
+  Sql += "       , INITCAP(reason) reason\n"
+  Sql += "       , TO_CHAR(created, 'yyyy-mm-dd hh24:mi:ss') created\n"
+  Sql += "       , TO_CHAR(last_modified, 'yyyy-mm-dd hh24:mi:ss') last_modified\n"
+  Sql += "       , TO_CHAR(last_used, 'yyyy-mm-dd hh24:mi:ss') last_used\n"
+  Sql += "    FROM DBA_SQL_PLAN_DIRECTIVES\n"
+  if (SortBy != ''):
+    Sql += "ORDER BY " + SortBy + ";"
+  else:
+    Sql += "ORDER BY created;"
+ 
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

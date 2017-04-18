@@ -1,0 +1,211 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        sqlhints                                                                          #
+# Author:      Randy Johnson                                                                     #
+# Description: Dumps outline hints for a SQL statement.                                          #
+#                                                                                                #
+# Usage: sqlhints [options]                                                                      #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help   show this help message and exit                                                 #
+#   -a           search the AWR (default is v$sql)                                               #
+#   -c CHILDNUM  value for child_no                                                              #
+#   -g           search gv$sql (default is v$sql)                                                #
+#   -p PLANHASH  value for plan_hash                                                             #
+#   -s           print SQL query.                                                                #
+#   -i SQLID     value for sql_id                                                                #
+#   -v           print version info.                                                             #
+#                                                                                                #
+# Sample Report                                                                                  #
+#                                                                                                #
+# Inst Sql ID             Child No. Outline Hints                                                #
+# ---- ------------- -------------- ------------------------------------------------------------ #
+#    1 czvpgufc8cwr3              0 IGNORE_OPTIM_EMBEDDED_HINTS                                  #
+#                                   OPTIMIZER_FEATURES_ENABLE('11.2.0.4')                        #
+#                                   DB_VERSION('11.2.0.4')                                       #
+#                                   ALL_ROWS                                                     #
+#                                   OUTLINE_LEAF(@"SEL$1")                                       #
+#                                   FULL(@"SEL$1" "DUAL"@"SEL$1")                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# mm/dd/yyyy 1.00 Randy Johnson    Initial write.                                                #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 07/17/2015 3.00 Randy Johnson    Added prompts for username, password, tnsname. Folded AWR and #
+#                                  V$ versions of the script together into this script (see -a   #
+#                                  option).                                                      #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'SQL Hints'
+  Version        = '3.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-a',  dest='Awr',      action='store_true', default=False,           help="search the AWR (default is v$sql)")
+  ArgParser.add_option("-c",  dest="ChildNum",                      default=0,     type=int, help="value for child_no")
+  ArgParser.add_option("-p",  dest="PlanHash",                      default=0,     type=int, help="value for plan_hash")
+  ArgParser.add_option('-i',  dest='SqlId',                         default='',    type=str, help="value for sql_id")
+  ArgParser.add_option('--s', dest='Show',     action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',  action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Awr         = Options.Awr
+  ChildNum    = str(Options.ChildNum)
+  PlanHash    = str(Options.PlanHash)
+  Show        = Options.Show
+  SqlId       = Options.SqlId
+  ShowVer     = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  # If SQL ID was not passed on the command line...
+  if (SqlId == ''):
+    if (version_info[0] >= 3):
+      SqlId = input('\nEnter SQL ID: ')
+    else:
+      SqlId = raw_input('\nEnter SQL ID:')
+    if (SqlId == ''):
+      print('SQL ID is required.')
+      exit(1)
+
+
+  Sql += "column sql_id        format a13           heading 'Sql ID'\n"
+  if (Awr):
+    Sql += "column plan_hash     format 9999999999999 heading 'Plan Hash'\n"
+  else:
+    Sql += "column child_number  format 9999999999999 heading 'Child No.'\n"
+  Sql += "column outline_hints format a150          heading 'Outline Hints'\n"
+  Sql += "\n"
+  Sql += "set pages 10000\n"
+
+  if (Awr):
+    Sql += "break on sql_id on plan_hash skip 1\n"
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         s.sql_id\n"
+    Sql += "       , s.plan_hash\n"
+    Sql += "       , EXTRACTVALUE(VALUE(d),'/hint') AS outline_hints\n"
+    Sql += "    FROM XMLTABLE ('/*/outline_data/hint'\n"
+    Sql += "                   PASSING (SELECT xmltype (other_xml) AS xmlval\n"
+    Sql += "                              FROM dba_hist_sql_plan\n"
+    Sql += "                             WHERE sql_id = '" + SqlId + "'\n"
+    if (PlanHash != '0'):
+      Sql += "                               AND plan_hash_value = " + PlanHash + "\n"
+    Sql += "                               AND other_xml IS NOT NULL\n"
+    Sql += "                           )\n"
+    Sql += "         ) d\n"
+    Sql += "       , (SELECT sql_id\n"
+    Sql += "               , plan_hash_value AS plan_hash\n"
+    Sql += "            FROM dba_hist_sql_plan\n"
+    Sql += "           WHERE sql_id LIKE '%" + SqlId + "%'\n"
+    Sql += "             AND plan_hash_value = " + PlanHash + "\n"
+    Sql += "             AND other_xml IS NOT null\n"
+    Sql += "         ) s;\n"
+  else:
+    Sql += "break on sql_id on child_number skip 1\n"
+    Sql += "\n"    
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         s.sql_id\n"
+    Sql += "       , s.child_number\n"
+    Sql += "       , EXTRACTVALUE(value(t), '/hint') AS outline_hints\n"
+    Sql += "    FROM XMLTABLE('/*/outline_data/hint'\n"
+    Sql += "                PASSING(SELECT xmltype(other_xml) AS xmlval\n"
+    Sql += "                          FROM v$sql_plan\n"
+    Sql += "                         WHERE sql_id LIKE '%" + SqlId + "%'\n"
+    Sql += "                           AND child_number = " + ChildNum + "\n"
+    Sql += "                           AND other_xml IS NOT null\n"
+    Sql += "                       )\n"
+    Sql += "       ) t\n"
+    Sql += "       , (SELECT sql_id\n"
+    Sql += "               , child_number\n"
+    Sql += "            FROM v$sql_plan\n"
+    Sql += "           WHERE sql_id LIKE '%" + SqlId + "%'\n"
+    Sql += "             AND child_number = " + ChildNum + "\n"
+    Sql += "             AND other_xml IS NOT null\n"
+    Sql += "         ) s;\n"
+  
+    #Sql += "SELECT inst_id\n"
+    #Sql += "\n\n-- Alternate version proposed by Jonthan Lewis and Abdul (irfan)\n"
+    #Sql += "SELECT EXTRACTVALUE(value(t),'.') hint\n"
+    #Sql += "  FROM TABLE(SELECT xmlsequence(extract(xmltype(other_xml),'/other_xml/outline_data/hint'))\n"
+    #Sql += "               FROM v$sql_plan\n"
+    #Sql += "              WHERE sql_id = '" + SqlId + "'\n"
+    #Sql += "                AND child_number = " + ChildNum + "\n"
+    #Sql += "                AND other_xml IS NOT null\n"
+    #Sql += "            ) t;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,152 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        dggap                                                                            #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Reports redo apply gap information.                                              #
+#                                                                                                #
+#                                                                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 10/27/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Data Guard Gap Info.'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # ------------------------------------------------
+  # Imports that are conditional on Python Version.
+  # ------------------------------------------------
+  if (version_info[0] >= 3):
+    from configparser import SafeConfigParser
+  else:
+    from ConfigParser import SafeConfigParser
+  # ------------------------------------------------
+  
+  ArgParser.add_option('-g',  dest='Global',  action='store_true', default=False, help="search gv$... (default is v$...)")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False, help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False, help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Global    = Options.Global
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+    
+  if (Global):
+    Sql += "column inst_id        format 999        heading 'Inst'\n"
+  Sql += "column thread#        format 999          heading 'Thread'\n"
+  Sql += "column low_sequence#  format 999999999999 heading 'Low Sequence'\n"
+  Sql += "column high_sequence# format 999999999999 heading 'High Sequence'\n"
+  Sql += "column gap_count      format 999999999999 heading 'Gap'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         inst_id                inst_id\n"
+    Sql += "       , thread#\n"
+  else:
+    Sql += "         thread#\n"
+  Sql += "       , low_sequence#\n"
+  Sql += "       , high_sequence#\n"
+  Sql += "       , high_sequence# - low_sequence# gap_count\n"
+  if (Global):
+    Sql += "    FROM gv$archive_gap\n"
+  else:
+    Sql += "    FROM v$archive_gap\n"
+  if (Global):
+    Sql += "ORDER BY inst_id\n"
+    Sql += "       , thread#;"
+  else:
+    Sql += "ORDER BY thread#;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('\n-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and not Show):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+    
+  Stdout = Stdout.strip()
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+    
+    ResultSet = Stdout.split('\n')[1:]
+    print(ResultSet)
+  
+  
+  
+  
+  
+  
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

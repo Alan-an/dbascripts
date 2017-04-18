@@ -1,0 +1,246 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        oerrdump                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints all error Oracle codes/messages for installed software. If a facility is  #
+#               provided on the command line then only errors for that facility are dumped.      #
+#                                                                                                #
+#  Usage: oerrdump [options]                                                                     #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help           show this help message and exit                                        #
+#    --facerr=FACILITY    Dump errors for a specific facility.                                   #
+#    --comperr=COMPONENT  Dump errors for a specific component.                                  #
+#    -f                   Dump all facilities.                                                   #
+#    -c                   Dump all components.                                                   #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/19/2012 1.00 Randy Johnson    Initial release.                                              #
+# 08/10/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+#                                                                                                #
+# Todo's                                                                                         #
+#                                                                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+import codecs
+
+from signal     import signal
+from signal     import SIGPIPE
+from signal     import SIG_DFL
+from optparse   import OptionParser
+from os         import environ
+from os.path    import basename
+from os.path    import isfile
+from re         import match
+from re         import search
+from sys        import argv
+from sys        import exit
+
+
+# For handling termination in stdout pipe, ex: when you run: oerrdump | head
+signal(SIGPIPE, SIG_DFL)
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+
+# Def : LoadFacilities()
+# Desc: Parses the ficiliy file and returns a list of lists (2 dim array)
+#       containing:
+#         facility:component:rename:description
+# Args: Facility file name.
+# Retn: FacilitiesDD
+#---------------------------------------------------------------------------
+def LoadFacilities(FacilitiesFile):
+  FacDict = {}
+  FacDD   = {}
+
+  try:
+    facfil = open(FacilitiesFile, 'r')
+  except:
+    PythonStackTrace()
+    print('Cannot open facilities file: %s for read.' % FacilitiesFile)
+    exit(1)
+
+  FacFileContents = facfil.read().split('\n')
+  for line in FacFileContents:
+    if (not (search(r'^\s*$', line))):   # skip blank lines
+      if (line.find('#') >= 0):
+        line=line[0:line.find('#')]
+      if (line.count(':') == 3):   # ignore lines that do not contain 3 :'s
+        (Facility, Component, OldName, Description) = line.split(':')
+        FacList = [Facility.strip().upper(), Component.strip(), OldName.strip(), Description.strip()]
+        if (Facility != ''):
+          FacDict = {
+           'Facility'    : Facility.strip(),
+           'Component'   : Component.strip(),
+           'OldName'     : OldName.strip(),
+           'Description' : Description.strip()
+          }
+          FacDD[Facility.strip()] = FacDict
+  return(FacDD)
+# End LoadFacilities()
+
+# Def : ExtractMessages()
+# Desc:
+#
+#
+# Args:
+# Retn:
+#---------------------------------------------------------------------------
+def ExtractMessages(Facility, MessagesFile):
+  Msg         = []
+  MsgDict     = {}
+  MsgDD       = {}
+  ErrCode     = ''
+  Firstfind   = True
+  Facility    = Facility.upper()
+
+  try:
+    ###! msgfil = open(MessagesFile, 'r')
+    msgfil = codecs.open(MessagesFile, mode='r', encoding='ISO-8859-1', errors='strict', buffering=1)
+  except:
+    PythonStackTrace()
+    print('Cannot open Messages file: %s for read.' % MessagesFile)
+    exit(1)
+
+  MsgFileContents = msgfil.readlines()
+  for line in MsgFileContents:
+    matchObj = match(r'\d+,*', line)
+    if (matchObj):
+      if (Firstfind):
+        ErrCode = matchObj.group()
+        ErrCode = ErrCode[0:ErrCode.find(',')]
+        Msg.append(line.strip())
+        Firstfind = False
+      else:
+        MsgDict = { Facility + '-' + ErrCode : Msg }
+        MsgDD[Facility + '-' + ErrCode] = MsgDict
+        MsgDict = {}
+        Msg = []
+        ErrCode = matchObj.group()
+        ErrCode = ErrCode[0:ErrCode.find(',')]
+        Msg.append(line.strip())
+    else:
+      matchObj = match(r'\/\/s*', line)
+      if (matchObj):
+        if (not Firstfind):
+          Msg.append(line.strip())
+  return(MsgDD)
+# End ExtractMessages()
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+# --------------------------------------
+# ---- Begin Main Program --------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd      = basename(argv[0])
+  argc     = len(argv) - 1
+  Facility = ''
+
+  # Process command line options
+  # ----------------------------------
+  ArgParser = OptionParser()
+  ArgParser.add_option("--facerr",                       dest="Facility",        default='',    type=str, help="Dump errors for a specific facility.")
+  ArgParser.add_option("--comperr",                      dest="Component",       default='',    type=str, help="Dump errors for a specific component.")
+  ArgParser.add_option("-f",        action="store_true", dest="DumpFacilities",  default=False,           help="Dump all facilities.")
+  ArgParser.add_option("-c",        action="store_true", dest="DumpComponents",  default=False,           help="Dump all components.")
+
+  Options, args = ArgParser.parse_args()
+  
+  if 'ORACLE_HOME' in list(environ.keys()):
+    if environ['ORACLE_HOME'] == '':
+      print('ORACLE_HOME not set. Exiting...')
+      exit(1)
+    else:
+      OracleHome = environ['ORACLE_HOME']
+  else:
+    print('ORACLE_HOME not set. Exiting...')
+    exit(1)
+
+  # Get the facility information from the $ORACLE_HOME/lib/facility.lis file
+  FacilitiesFile = OracleHome + '/lib/facility.lis'
+  FacilitiesDD   = LoadFacilities(FacilitiesFile)
+
+  if (Options.DumpComponents): # Dump Components
+    ComponentList = []
+    for key in sorted(FacilitiesDD.keys()):
+      if (FacilitiesDD[key]['Component'] not in ComponentList):
+        ComponentList.append(FacilitiesDD[key]['Component'])
+    ComponentList.sort()
+    print('COMPONENT:')
+    for Component in ComponentList:
+      print(Component)
+    exit()
+  elif (Options.DumpFacilities): # Dump Facilities
+    FileState = ''
+    print('FACILITY:   MESSAGES FILE:                                                                   STATE:')
+    for Facility in sorted(FacilitiesDD.keys()):
+      MessagesFile = OracleHome + '/' + FacilitiesDD[Facility]['Component'] + '/' + 'mesg' + '/' + FacilitiesDD[Facility]['Facility'] + 'us.msg'
+      if (isfile(MessagesFile)):
+        FileState = ''
+      else:
+      	FileState = 'Not installed'
+      print('%-10s  %-80s %-10s' % (Facility, MessagesFile, FileState))
+    exit()
+  elif (Options.Facility != ''): # Dump a specific facility
+    Facility = Options.Facility.lower()
+    if (not (Facility in list(FacilitiesDD.keys()))):
+      print('\nFacility not found.')
+      exit(1)
+    else:
+      MessagesFile = OracleHome + '/' + FacilitiesDD[Facility]['Component'] + '/' + 'mesg' + '/' + FacilitiesDD[Facility]['Facility'] + 'us.msg'
+      if (isfile(MessagesFile)):
+        print('Dumping message file: %s\n' % MessagesFile)
+        ErrorDD = ExtractMessages(Facility, MessagesFile)
+        print('ERROR:      MESSAGE:')
+        for Msgkey in sorted(ErrorDD.keys()):
+          for line in ErrorDD[Msgkey][Msgkey]:
+            print('%-8s   %-60s' % (Msgkey, line[0:100]))
+          print('')
+      else:
+        print('\nMessages file not found.', MessagesFile) 
+        print('\nProduct may not be installed.')
+        exit(1)
+    exit()
+  elif (Options.Component != ''): # Dump a specific component
+    Component = Options.Component.lower()
+    for Facility in sorted(FacilitiesDD.keys()):
+      if (Component == FacilitiesDD[Facility]['Component']):
+        MessagesFile = OracleHome + '/' + FacilitiesDD[Facility]['Component'] + '/' + 'mesg' + '/' + FacilitiesDD[Facility]['Facility'] + 'us.msg'
+        if (isfile(MessagesFile)):
+          print('Dumping message file: %s\n' % MessagesFile)
+          ErrorDD = ExtractMessages(Facility, MessagesFile)
+          print('ERROR:      MESSAGE:')
+          for Msgkey in sorted(ErrorDD.keys()):
+            for line in ErrorDD[Msgkey][Msgkey]:
+              print('%-8s : %-60s' % (Msgkey, line[0:100]))
+            print('')
+        print('')
+    exit()
+  else: # Dump all error messages installed.
+    for key in sorted(FacilitiesDD.keys()):
+      MessagesFile = OracleHome + '/' + FacilitiesDD[key]['Component'] + '/' + 'mesg' + '/' + FacilitiesDD[key]['Facility'] + 'us.msg'
+      if (isfile(MessagesFile)):
+        print('Dumping message file: %s\n' % MessagesFile)
+        ErrorDD = ExtractMessages(key, MessagesFile)
+        for Msgkey in sorted(ErrorDD.keys()):
+          for line in ErrorDD[Msgkey][Msgkey]:
+            print('%-8s : %-60s' % (Msgkey, line[0:100]))
+          print('')
+      else:
+        print('File not found: %s\n' % MessagesFile)
+    exit()
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
+

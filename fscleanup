@@ -1,0 +1,289 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        fscleanup                                                                        #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report of files to edit and directories to remove when a database is    #
+#               dropped.                                                                         #
+#                                                                                                #
+#  Wish List                                                                                     #
+#   - Identify Backups                                                                           #
+#   - Identify other files such as scripts, logs, etc.                                           #
+#   - Identify cluster identities (service names, etc.)                                          #
+#                                                                                                #
+#                                                                                                #
+# Usage: fscleanup [options]                                                                     #
+#                                                                                                #
+# Example: fscleanup MYDB -s /u01 -x '/archive, /tmp'                                            #
+#                                                                                                #
+# options:                                                                                       #
+#   -h, --help      show this help message and exit                                              #
+#   -s STARTINGDIR  starting directory (default=/)                                               #
+#   -x EXCLUDE      subdirectories to exclude (default='')                                       #
+#   -v              print version info.                                                          #
+#                                                                                                #
+# Todo's                                                                                         #
+# - Check for existance of tnsnames.ora before attempting to scan it.                            #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 11/09/2012 1.00 Randy Johnson    Initial release.                                              #
+# 07/20/2015 2.00 Randy Johnson    Automated locating tnsnames.ora and listener.ora files.       # 
+#                                  Added the -x and -s options. Updated for Python 2.4-3.4       #
+#                                  compatibility.                                                #
+# 08/19/2015 2.10 Randy Johnson    Better error message when I cannot open a file for read.      #
+# 08/25/2015 2.20 Randy Johnson    Renamed script from dbcleanup to fscleanup.                   #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os           import getuid
+from os           import listdir
+from os           import stat
+from os           import statvfs
+from os           import walk
+from os.path      import isdir
+from os.path      import isfile
+from os.path      import join as pathjoin
+from os.path      import sep as pathsep
+from os.path      import split as pathsplit
+from re           import IGNORECASE
+from re           import compile
+from re           import match
+from re           import search
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from socket       import gethostname
+from stat         import ST_UID
+from subprocess   import PIPE
+from subprocess   import Popen
+from subprocess   import STDOUT
+from sys          import argv
+from sys          import exit
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+
+# Def : FindFile()
+# Desc: Searches for a file starting at a specific directory/subdirectory.
+#       Exits at first occurance found.
+# Args: StartingDir, Filename
+# Retn: 1=Fully Qualified Filename
+#---------------------------------------------------------------------------
+def FindFile(StartingDir, Filename):
+  for (path, dirs, files) in walk(StartingDir):
+    if(Filename in files):
+      return(pathjoin(path, Filename))
+  return('')
+# End FindFile()
+
+
+# Def : ScanFile()
+# Desc: Scans a text file for a string
+# Args: Filename, SearchString
+# Retn: rc (<0=failure, 1=found,0=not found), List of lines containing searchstring
+#---------------------------------------------------------------------------
+def ScanFile(Filename, SearchString):
+  Hitcount = 0
+  Hitlist  = []
+
+  try:
+    f = open(Filename)
+  except:
+    #print('\nCannot open file: %s' % for read.' % Filename)
+    return -1, []
+
+  Found = compile(r'^.*' + SearchString  + '.*')
+  Contents = f.read().split('\n')
+  linenum = 0
+  for line in Contents:
+    linenum += 1
+    line = line.strip()
+    if (Found.search(line)):
+      Hitlist.append([linenum, line])
+      Hitcount += 1
+  f.close()
+
+  return(Hitcount, Hitlist)
+# End ScanFile()
+
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = pathsplit(argv[0])[1]
+  CmdDesc        = 'Database Cleanup Utility'
+  Version        = '2.20'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  OratabFile     = '/etc/oratab'
+  StartingDir    = '/'
+  StartList      = []
+  ScanList       = []
+  PathList       = []
+  OracleHomeList = []
+  OracleFileList = ['listener.ora','tnsnames.ora']
+  ExcludeList    = ['/bin','/boot','/dev','/lib','/lib64','/opt','/proc','/root','/sbin','/sys']
+  Hostname       = gethostname().split('.')[0]
+  MyUid          = getuid()
+
+
+  ScanList.append('/home/oracle/.env/dbmap')
+  ScanList.append('/home/oracle/.bash_profile')
+  ScanList.append('/home/oracle/.bashrc')
+  ScanList.append('/home/oracle/.bash_profile')
+  ScanList.append('/home/oracle/dba/etc/.passwd')
+  ScanList.append('/home/oracle/dba/etc/logrotate.conf')
+
+  # For handling termination in stdout pipe.
+  #  ex. when you run: oerrdump | head
+  #--------------------------------------------
+  signal(SIGPIPE, SIG_DFL)
+
+  # Process command line options
+  # ----------------------------------
+  Usage = Cmd + " [options]\n\nExample: " + Cmd + " MYDB -s /u01 -x '/archive, /tmp'"
+  ArgParser = OptionParser(Usage)
+  ArgParser.add_option("-s",  dest="StartingDir",                      default='',    type=str, help="starting directory (default=/)")
+  ArgParser.add_option("-x",  dest="Exclude",                          default='',    type=str, help="subdirectories to exclude")
+  ArgParser.add_option("--v", dest="ShowVer",     action="store_true", default=False,           help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  if (Options.ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Now = datetime.now()
+  print('\n============================================================================================================================')
+  print('File System Cleanup Utility for Oracle, v%4s %75s' % (Version, Now.strftime("%Y-%m-%d %H:%M")))
+  print('============================================================================================================================')
+
+  # Set the starting directory for the file/directory search.
+  if(Options.StartingDir != ''):
+    StartingDir = Options.StartingDir
+    ExcludeList = []
+
+  # Set the list of subdirectories to exclude from the search.
+  if(Options.Exclude != ''):
+    for Dir in Options.Exclude.split(','):
+      ExcludeList.append(Dir.strip())
+
+  # Set the database name
+  if (argc > 0):
+    DbName = args[argc-1]
+  else:
+    print('\nSpecify a database to cleanup (case sensitive)')
+    exit(1)
+
+  # Locate ORACLE_HOMES
+  OraInstLoc = FindFile('/etc', 'oraInst.loc')
+  if (OraInstLoc != ''):
+    (hitcount, hitlist) = ScanFile(OraInstLoc, 'inventory_loc=')
+    if(hitcount >= 1):
+      OraInvDir = hitlist[0][1].split('=')[1]
+      if (OraInvDir != ''):
+        OracleInventory = pathjoin(OraInvDir, 'ContentsXML', 'inventory.xml')
+
+    if (OracleInventory != ''):
+      (hitcount, hitlist) = ScanFile(OracleInventory, '<HOME NAME="')
+      if (hitcount != 0):
+        for (junk,line) in hitlist:
+          OracleHomeList.append(line.split('LOC="')[1].split('"')[0])
+
+  print('Locating Oracle files...')
+  for OracleHome in OracleHomeList:
+    for Filename in OracleFileList:
+      OracleFile = FindFile(OracleHome, Filename)
+      if (OracleFile != ''):
+        ScanList.append(OracleFile)
+
+  print('\nScanning Files')
+  ScanResults = []
+  for Filename in ScanList:
+    (hitcount, hitlist) = ScanFile(Filename, DbName)
+    ScanResults.append((Filename, hitcount, hitlist))
+    if (hitcount >= 0):
+      print(' %s' % Filename)
+    else:
+      print('\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+      print('Cannot open file for read: %s' % Filename)
+      print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n')
+
+  print('\n Text                                Line#  Filename')
+  print(' ----------------------------------- ----- ---------------------------------------------------------------------------------')
+  for (Filename, hitcount, hitlist) in ScanResults:
+    if (hitcount > 0):
+      for hit in hitlist:
+        linenum, text = hit
+        print(' %-35s %05s %-50s' % (text[0:35].strip(), linenum, Filename))
+
+  print('\nSearching for directories starting at %s' % StartingDir)
+  if(ExcludeList != []):
+    print('\n Directories Excluded')
+    print(' ---------------------------------------------------------------------------------------------------------------------------')
+    print(' %s' % ', '.join(ExcludeList))
+
+  # Build a list if starting sub directories from the StartingDir.
+  # This is where the directories in the Exclude List are eliminated.
+  # --------------------------------------------------------------------
+  if (isdir(StartingDir)):
+    for item in listdir(StartingDir):
+      if(StartingDir == '/'):
+        item = StartingDir + item
+      else:
+        item = StartingDir + pathsep + item
+    
+      if (isdir(item) and (item not in ExcludeList)):
+        StartList.append(item)
+  else:
+    print('\nInvalid directory specified (-s %s).', StartingDir)
+    exit(1)
+    
+  # Locate files containing DbName in the file name
+  print('\n Directories Found')
+  print(' ---------------------------------------------------------------------------------------------------------------------------')
+  FoundAnycase   = compile(r'^.*' + DbName.upper() + '.*', IGNORECASE)
+  FoundLowercase = compile(r'^.*' + DbName.lower() + '.*')
+  FoundUppercase = compile(r'^.*' + DbName.upper() + '.*')
+
+  # Check just the files in the starting directory
+  for item in listdir(StartingDir):
+    item = StartingDir + item
+    if (isfile(item)):
+      fstat = stat(item)
+      if (fstat[ST_UID] == MyUid):
+        if ((FoundLowercase.search(item)) or (FoundUppercase.search(item))):
+          print(item)
+
+  # Check all subdirectories and files from the starting directories (direct subdirectories of StartDir)
+  for SearchDir in StartList:
+    for (path, dirs, files) in walk(SearchDir):
+      fstat = stat(path)
+      if (fstat[ST_UID] == MyUid):
+        if ((FoundLowercase.search(path)) or (FoundUppercase.search(path))):
+          print(' %s' % path)
+
+  Now = datetime.now()
+  print('============================================================================================================================')
+  print('End of Report%111s' % (Now.strftime("%Y-%m-%d %H:%M")))
+  print('============================================================================================================================')
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

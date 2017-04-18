@@ -1,0 +1,241 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        cbostats                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report of missing/stale CBO statistics.                                 #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/03/2015 1.00 Randy Johnson    Initial write.                                                #
+# 09/15/2015 1.10 Randy Johnson    Added option for CSV report. Added filter option (-f) and     #
+#                                  fixed the SQL for filter criteria which was not working.      #
+# 09/28/2015 1.11 Randy Johnson    Fixed error in help message.                                  #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Stale/Missing CBO Statistics'
+  Version        = '1.11'
+  VersionDate    = 'Tue Sep 18 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  OwnerList      = []
+  ExcludeList    = []
+
+  ExcludeList.append('ANONYMOUS')
+  ExcludeList.append('CTXSYS')
+  ExcludeList.append('DBSNMP')
+  ExcludeList.append('DIP')
+  ExcludeList.append('DMSYS')
+  ExcludeList.append('EXFSYS')
+  ExcludeList.append('MDSYS')
+  ExcludeList.append('MGMT_VIEW')
+  ExcludeList.append('OLAPSYS')
+  ExcludeList.append('ORDPLUGINS')
+  ExcludeList.append('ORDDATA')
+  ExcludeList.append('ORDSYS')
+  ExcludeList.append('OUTLN')
+  ExcludeList.append('SI_INFORMTN_SCHEMA')
+  ExcludeList.append('SYS')
+  ExcludeList.append('SYSMAN')
+  ExcludeList.append('SYSTEM')
+  ExcludeList.append('WMSYS')
+  ExcludeList.append('XDB')
+  ExcludeList.append('XS$NULL')
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-f',  dest='Filter',  action='store_true', default=False,           help="filter out Oracle schemas: sys, system, dbsnmp, ...")
+  ArgParser.add_option('-c',  dest='Csv',     action='store_true', default=False,           help="CSV report format (default = fixed)")
+  ArgParser.add_option('-o',  dest='Owners',                       default='',    type=str, help="where owner in (owner1,owner2,owner3, ...)")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Filter    = Options.Filter
+  Csv       = Options.Csv
+  Owners    = Options.Owners
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  if(Owners != ''):
+    OwnerList = Owners.upper().split(',')
+
+  if(Csv):  
+    Sql += " set pages 0\n"
+    Sql += "\n"
+    Sql += "prompt OWNER,TABLE,PARTITION,SUBPARTITION,TAB_NUM_ROWS,TAB_USED_BLOCKS,TAB_GSTATS,PRT_GSTATS,TAB_ANALYZED,PRT_ANALYZED,SPRT_ANALYZED,TAB_STALE,PART_STALE,SUBPART_STALE\n"
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         t.owner                                            ||','||\n"
+    Sql += "         t.table_name                                       ||','||\n"
+    Sql += "         p.partition_name                                   ||','||\n"
+    Sql += "         sp.subpartition_name                               ||','||\n"
+    Sql += "         t.num_rows                                         ||','||\n"
+    Sql += "         (t.blocks - t.empty_blocks)                        ||','||\n"
+    Sql += "         t.global_stats                                     ||','||\n"
+    Sql += "         p.global_stats                                     ||','||\n"
+    Sql += "         to_char(t.last_analyzed , 'yyyy-mm-dd hh24:mi:ss') ||','||\n"
+    Sql += "         to_char(p.last_analyzed , 'yyyy-mm-dd hh24:mi:ss') ||','||\n"
+    Sql += "         to_char(sp.last_analyzed, 'yyyy-mm-dd hh24:mi:ss') ||','||\n"
+    Sql += "         t.stale_stats                                      ||','||\n"
+    Sql += "         p.stale_stats                                      ||','||\n"
+    Sql += "         sp.stale_stats\n"
+  else:  
+    Sql += "col owner             format a30                             heading 'Owner'\n"
+    Sql += "col table_name        format a30                             heading 'Table'\n"
+    Sql += "col partition_name    format a30                             heading 'Partition'\n"
+    Sql += "col subpartition_name format a30                             heading 'Subpartition'\n"
+    Sql += "col tab_analyzed      format a21                             heading 'Table Analyzed'\n"
+    Sql += "col prt_analyzed      format a21                             heading 'Partn Analyzed'\n"
+    Sql += "col sprt_analyzed     format a21                             heading 'Subptn Analyzed'\n"
+    Sql += "col tab_stale         format a6                              heading 'TStale'\n"
+    Sql += "col part_stale        format a6                              heading 'PStale'\n"
+    Sql += "col subpart_stale     format a6                              heading 'SStale'\n"
+    Sql += "col tab_gstats        format a10                             heading 'Tab GStats'\n"
+    Sql += "col prt_gstats        format a10                             heading 'Prt GStats'\n"
+    Sql += "col tab_num_rows      format 999,999,999,999,999             heading 'Table Num Rows'\n"
+    Sql += "col tab_used_blocks   format 999,999,999,999,999,999,999,999 heading 'Table Used Blocks'\n"
+    Sql += "\n"
+    Sql += "  SELECT " + SqlHeader + "\n"
+    Sql += "         t.owner                                             owner\n"
+    Sql += "       , t.table_name                                        table_name\n"
+    Sql += "       , p.partition_name                                    partition_name\n"
+    Sql += "       , sp.subpartition_name                                subpartition_name\n"
+    Sql += "       , t.num_rows                                          tab_num_rows\n"
+    Sql += "       , (t.blocks - t.empty_blocks)                         tab_used_blocks\n"
+    Sql += "       , t.global_stats                                      tab_gstats\n"
+    Sql += "       , p.global_stats                                      prt_gstats\n"
+    Sql += "       , to_char(t.last_analyzed , 'yyyy-mm-dd hh24:mi:ss')  tab_analyzed\n"
+    Sql += "       , to_char(p.last_analyzed , 'yyyy-mm-dd hh24:mi:ss')  prt_analyzed\n"
+    Sql += "       , to_char(sp.last_analyzed, 'yyyy-mm-dd hh24:mi:ss')  sprt_analyzed\n"
+    Sql += "       , t.stale_stats                                       tab_stale\n"
+    Sql += "       , p.stale_stats                                       part_stale\n"
+    Sql += "       , sp.stale_stats                                      subpart_stale\n"
+  Sql += "    FROM (   SELECT owner\n"
+  Sql += "                  , table_name\n"
+  Sql += "                  , num_rows\n"
+  Sql += "                  , blocks\n"
+  Sql += "                  , empty_blocks\n"
+  Sql += "                  , global_stats\n"
+  Sql += "                  , last_analyzed\n"
+  Sql += "                  , stale_stats\n"
+  Sql += "               FROM dba_tab_statistics\n"
+  Sql += "              WHERE object_type = 'TABLE'                               --<--< Tables\n"
+  Sql += "                AND (last_analyzed is null or stale_stats = 'YES')\n"
+  if (OwnerList != []):
+    Sql += "               AND owner IN ('" + "','".join(OwnerList) + "')\n"
+  if (Filter and ExcludeList != []):
+    Sql += "                 AND owner NOT IN (  '" + "'\n                                    ,'".join(ExcludeList) + "'\n                                  )\n"
+  Sql += "         ) t\n"
+  Sql += "       , (   SELECT owner\n"
+  Sql += "                  , table_name\n"
+  Sql += "                  , partition_name\n"
+  Sql += "                  , last_analyzed\n"
+  Sql += "                  , stale_stats\n"
+  Sql += "                  , global_stats\n"
+  Sql += "               FROM dba_tab_statistics\n"
+  Sql += "              WHERE object_type = 'PARTITION'                           --<--< Partitions\n"
+  Sql += "                AND (last_analyzed is null or stale_stats = 'YES')\n"
+  if (OwnerList != []):
+    Sql += "              AND owner IN ('" + "','".join(OwnerList) + "')\n"
+  if (Filter and ExcludeList != []):
+    Sql += "                AND owner NOT IN (  '" + "'\n                                    ,'".join(ExcludeList) + "'\n                                  )\n"
+  Sql += "         ) p\n"
+  Sql += "       , (   SELECT owner\n"
+  Sql += "                  , table_name\n"
+  Sql += "                  , partition_name\n"
+  Sql += "                  , subpartition_name\n"
+  Sql += "                  , last_analyzed\n"
+  Sql += "                  , stale_stats\n"
+  Sql += "                  , global_stats\n"
+  Sql += "               FROM dba_tab_statistics\n"
+  Sql += "              WHERE object_type = 'SUBPARTITION'                        --<--< Subpartitions\n"
+  Sql += "                AND (last_analyzed is null or stale_stats = 'YES')\n"
+  if (OwnerList != []):
+    Sql += "              AND owner IN ('" + "','".join(OwnerList) + "')\n"
+  if (Filter and ExcludeList != []):
+    Sql += "                AND owner NOT IN (  '" + "'\n                                    ,'".join(ExcludeList) + "'\n                                  )\n"
+  Sql += "         ) sp\n"
+  Sql += "   WHERE t.owner          = p.owner(+)\n"
+  Sql += "     AND p.owner          = sp.owner(+)\n"
+  Sql += "     AND t.table_name     = p.table_name(+)\n"
+  Sql += "     AND p.table_name     = sp.table_name(+)\n"
+  Sql += "     AND p.partition_name = sp.partition_name(+)\n"
+  Sql += "ORDER BY t.owner\n"
+  Sql += "       , t.table_name\n"
+  Sql += "       , p.partition_name\n"
+  Sql += "       , sp.subpartition_name;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

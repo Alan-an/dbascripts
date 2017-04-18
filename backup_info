@@ -1,0 +1,151 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        backup_info                                                                      #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Reports RMAN backup information using the following commands:                    #
+#                                                                                                #
+#                - REPORT SCHEMA                                                                 #
+#                - LIST BACKUP SUMMARY                                                           #
+#                - LIST BACKUP                                                                   #
+#                - LIST BACKUP OF DATABASE                                                       #
+#                - LIST BACKUP OF ARCHIVELOG ALL                                                 #
+#                - LIST BACKUP OF CONTROLFILE                                                    #
+#                                                                                                #
+#  Usage: backup_info [options]                                                                  #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -a          report archivelog backups.                                                      #
+#    -c          report controlfile backups.                                                     #
+#    -d          report datafile backups.                                                        #
+#    -e          report all backup files (archivelogs, controlfiles, datafiles).                 #
+#    -r          report schema.                                                                  #
+#    -s          print rman commands.                                                            #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/15/2015 1.00 Randy Johnson    Initial write.                                                #
+# 08/24/2015 1.10 Randy Johnson    Added environ['NLS_DATE_FORMAT'] = 'yyyy-mm-dd hh24:mi'       #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunRman
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'RMAN Backup Reports'
+  Version        = '1.10'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Rcv            = ''
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Stdout         = ''
+
+  # Set NLS Date format for RMAN queries...
+  environ['NLS_DATE_FORMAT'] = 'yyyy-mm-dd hh24:mi'
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-a',  dest='Archivelogs',  action='store_true', default=False, help="report archivelog backups.")
+  ArgParser.add_option('-c',  dest='Controlfiles', action='store_true', default=False, help="report controlfile backups.")
+  ArgParser.add_option('-d',  dest='Datafiles',    action='store_true', default=False, help="report datafile backups.")
+  ArgParser.add_option('-e',  dest='Everything',   action='store_true', default=False, help="report all backup files (archivelogs, controlfiles, datafiles).")
+  ArgParser.add_option('-r',  dest='ReportSchema', action='store_true', default=False, help="report schema.")
+  ArgParser.add_option('--s', dest='Show',         action='store_true', default=False, help="print rman commands.")
+  ArgParser.add_option('--v', dest='ShowVer',      action='store_true', default=False, help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Archivelogs  = Options.Archivelogs
+  Controlfiles = Options.Controlfiles
+  Datafiles    = Options.Datafiles
+  Everything   = Options.Everything
+  ReportSchema = Options.ReportSchema
+  Show         = Options.Show
+  ShowVer      = Options.ShowVer
+  
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  if (ReportSchema == True):
+    Rcv += "REPORT SCHEMA;\n"
+
+  if (Everything == True):
+    Rcv += "LIST BACKUP;\n"
+
+  if (Datafiles == True):
+    Rcv += "LIST BACKUP OF DATABASE;\n"
+  
+  if (Archivelogs == True):
+    Rcv += "LIST BACKUP OF ARCHIVELOG ALL;\n"
+      
+  if (Controlfiles == True):
+    Rcv += "LIST BACKUP OF CONTROLFILE;"
+
+  Rcv = Rcv.strip()
+
+  if (Rcv == ''):
+    Rcv = 'LIST BACKUP SUMMARY;'
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Rcv)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):  
+    (Stdout) = RunRman(Rcv, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunRman(Rcv, ErrChk)  
+  
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

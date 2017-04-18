@@ -1,0 +1,159 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        dplan                                                                            #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Executes a dbms_xplan.display_awr report on a SQL_ID and prints the rerport.     #
+#                                                                                                #
+#  Usage: dplan [options]                                                                        #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help   show this help message and exit                                                #
+#    -a           retrieve the exec plan from the AWR                                            #
+#    -i SQLID     value for sql_id                                                               #
+#    -c CHILDNUM  value for child_no                                                             #
+#    -p PLANHASH  value for plan_hash                                                            #
+#    -s           print SQL query.                                                               #
+#    -v           print version info.                                                            #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 04/13/2012 1.00 Randy Johnson    Initial write.                                                #
+# 05/19/2014 1.10 Randy Johnson    Removed Keyboard input for Child ID. Now must use -c          #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 07/17/2015 2.10 Randy Johnson    Added prompts for username, password, tnsname.                #
+# 08/09/2015 3.00 Randy Johnson    Folded in dplan_awr script. Invoke with -a option.            #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'DBMS Xplan'
+  Version        = '2.10'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Development/Test/Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # ------------------------------------------------
+  # Imports that are conditional on Python Version.
+  # ------------------------------------------------
+  if (version_info[0] >= 3):
+    from configparser import SafeConfigParser
+  else:
+    from ConfigParser import SafeConfigParser
+  # ------------------------------------------------
+  
+  ArgParser.add_option('-a',  dest='Awr',        action='store_true', default=False,           help="retrieve the exec plan from the AWR")
+  ArgParser.add_option("-i",  dest="SqlId",                           default='',    type=str, help="value for sql_id")
+  ArgParser.add_option("-c",  dest="ChildNum",                        default=0,     type=int, help="value for child_no")
+  ArgParser.add_option("-p",  dest="PlanHash",                        default=0,     type=int, help="value for plan_hash")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,           help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Awr       = Options.Awr
+  SqlId     = Options.SqlId
+  ChildNum  = str(Options.ChildNum)
+  PlanHash  = str(Options.PlanHash)
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+    
+  if (SqlId == ''):
+    if (version_info[0] >= 3):
+      SqlId = input('\nEnter a SQL ID: ')
+    else:
+      SqlId = raw_input('\nEnter a SQL ID: ')      
+    if (SqlId == ''):
+      print('\nSQL ID is required.')
+      exit(1)
+  
+  Sql += SqlHeader + "\n"
+  Sql += "set lines     140\n"
+  Sql += "set pagesize    0\n"
+  Sql += "\n"
+  if (Awr):
+    Sql += "SELECT * FROM TABLE(dbms_xplan.display_awr(\n"
+    Sql += "                      SQL_ID          => '" + SqlId + "',\n"
+    if (PlanHash != '0'):
+      Sql += "                      PLAN_HASH_VALUE => " + PlanHash + ",\n"
+    Sql += "                      DB_ID           => null,\n"
+    Sql += "                      FORMAT          => 'typical +peeked_binds')\n"
+    Sql += "                   );"
+  else:
+    Sql += "SELECT * FROM TABLE(dbms_xplan.display_cursor(\n"
+    Sql += "                      SQL_ID          => '" + SqlId + "',\n"
+    Sql += "                      CURSOR_CHILD_NO => " + ChildNum + ",\n"
+    Sql += "                      FORMAT          => 'typical'));\n"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

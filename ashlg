@@ -1,0 +1,346 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        ashlg                                                                            #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report from DBA_HIST_ACTIVE_SESS_HISTORY that compares ASH resources    #
+#               used by a selection of user accounts compared with ASH resurces of all others.   #
+#                                                                                                #
+#  Usage: ashlg [options]                                                                        #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help    show this help message and exit                                               #
+#    -b BEGINTIME  sample_time >= BeginTime (default 1960-01-01 00:00:00)                        #
+#    -e ENDTIME    sample_time <= EndTime   (default 2015-08-01 16:36:35)                        #
+#    -c            CSV output mode suitable for Excel.                                           #
+#    -s            print SQL query.                                                              #
+#    -u USERS      where username in ('user1','user2','user3', ...)                              #
+#    -v            print version info.                                                           #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/31/2015 1.00 Randy Johnson    Initial write.                                                #
+# 08/24/2015 1.50 Randy Johnson    Added -a (dba_hist_active_sess_history) and -g, -i            #
+#                                  (gv$active_sess_history), and default = v$active_sess_history #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ValidateDate
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'ASH Load Groups'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  UserList       = []
+  Now            = datetime.now()
+  EndTime        = (Now.strftime('%Y-%m-%d %H:%M:%S'))
+  Colsep         = ','
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-a',  dest='Awr',        action='store_true', default=False,                           help="retrieve the exec plan from the AWR")
+  ArgParser.add_option('-b',  dest='BeginTime',                       default='1960-01-01 00:00:00', type=str, help="sample_time >= BeginTime (default 1960-01-01 00:00:00)")
+  ArgParser.add_option('-e',  dest='EndTime',                         default=EndTime,               type=str, help="sample_time <= EndTime   (default " + EndTime + ")")
+  ArgParser.add_option('-c',  dest='Csv',        action='store_true', default=False,                           help="CSV output mode suitable for Excel.")
+  ArgParser.add_option('-g',  dest='Global',     action='store_true', default=False,                           help="search gv$... (default is v$...)")
+  ArgParser.add_option('-i',  dest='Instances',                       default='',                    type=str, help="where inst_id in 1,2,3,...")
+  ArgParser.add_option('-u',  dest='Users',                           default='',                    type=str, help="where username in ('user1','user2','user3', ...)")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Awr       = Options.Awr
+  BeginTime = Options.BeginTime
+  EndTime   = Options.EndTime
+  Csv       = Options.Csv
+  Global    = Options.Global
+  Instances = Options.Instances
+  Users     = Options.Users.upper()
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  if(Users != ''):
+    UserList = Users.split(',')
+  else:
+    if (version_info[0] >= 3):
+      Users = input('\nEnter a list of users: ')
+    else:
+      Users = raw_input('\nEnter a list of users: ')
+    if (Users == ''):
+      print("\nOne or more users is required in the form of user1,user2,user3, ...")
+      exit(1)
+    else:
+      UserList = Users.split(',')
+  
+  if (Global and Awr):
+    print("\nGlobal (-g) and Instances (-i) options cannot be used with Awr (-a) option")
+    exit(1)
+    
+  if ((BeginTime or EndTime) and Global):
+    print("\nBeginTime (-b) and EndTime (-e) options cannot be used with Global (-g) or Instances (-i) options")
+    exit(1)
+    
+  if(Instances != ''):
+    Global = True
+    junk = Instances.split(',')
+    try:
+      if (version_info[0] >= 3):
+        junk = list(map(int, junk))
+      else:
+        junk = map(int, junk)
+    except:
+      print("Instance list must be in integer form, eg. -i 1,2,3,4")
+      exit(1)
+
+  (ValidDate, BeginTimeFormat) = ValidateDate(BeginTime)
+  if (ValidDate == False):
+    print("Invalid format for BeginTime. Acceptable formats follow:")
+    print("  YYYY-MM-DD")
+    print("  YYYY-MM-DD HH24")
+    print("  YYYY-MM-DD HH24:MI")
+    print("  YYYY-MM-DD HH24:MI:SS")
+    exit(1)
+
+  (ValidDate, EndTimeFormat) = ValidateDate(EndTime)
+  if (ValidDate == False):
+    print("Invalid format for EndTime. Acceptable formats follow:")
+    print("  YYYY-MM-DD")
+    print("  YYYY-MM-DD HH24")
+    print("  YYYY-MM-DD HH24:MI")
+    print("  YYYY-MM-DD HH24:MI:SS")
+    exit(1)
+
+  if (UserList != ''):
+    if (Csv == True):
+      Sql += "set pagesize      0\n"
+      Sql += "set heading     off\n"
+      Sql += "set lines     32767\n"
+      Sql += "set feedback    off\n"
+      Sql += "set echo        off\n"
+      Sql += "set trimspool    on\n"
+      Sql += "  SELECT " + SqlHeader + "\n"
+      Sql += "       TO_CHAR(u.sample_hour,'YYYY-MM-DD HH24:MI:SS')  ||'" + Colsep + "'||\n"
+      Sql += "       u.username                                      ||'" + Colsep + "'||\n"
+      Sql += "       o.username                                      ||'" + Colsep + "'||\n"
+      Sql += "       u.delta_time                                    ||'" + Colsep + "'||\n"
+      Sql += "       o.delta_time                                    ||'" + Colsep + "'||\n"
+      Sql += "       u.delta_read_io_requests                        ||'" + Colsep + "'||\n"
+      Sql += "       o.delta_read_io_requests                        ||'" + Colsep + "'||\n"
+      Sql += "       u.delta_write_io_requests                       ||'" + Colsep + "'||\n"
+      Sql += "       o.delta_write_io_requests                       ||'" + Colsep + "'||\n"
+      Sql += "       u.delta_read_io_bytes                           ||'" + Colsep + "'||\n"
+      Sql += "       o.delta_read_io_bytes                           ||'" + Colsep + "'||\n"
+      Sql += "       u.delta_write_io_bytes                          ||'" + Colsep + "'||\n"
+      Sql += "       o.delta_write_io_bytes                          ||'" + Colsep + "'||\n"
+      Sql += "       u.io_req                                        ||'" + Colsep + "'||\n"
+      Sql += "       o.io_req                                        ||'" + Colsep + "'||\n"
+      Sql += "       u.io_bytes                                      ||'" + Colsep + "'||\n"
+      Sql += "       o.io_bytes                                      ||'" + Colsep + "'||\n"
+      Sql += "       u.delta_interconnect_io_bytes                   ||'" + Colsep + "'||\n"
+      Sql += "       o.delta_interconnect_io_bytes                   ||'" + Colsep + "'||\n"
+      Sql += "       u.pga_allocated                                 ||'" + Colsep + "'||\n"
+      Sql += "       o.pga_allocated                                 ||'" + Colsep + "'||\n"
+      Sql += "       u.temp_space_allocated                          ||'" + Colsep + "'||\n"
+      Sql += "       o.temp_space_allocated\n"
+    else:
+      Sql += "col user_sample_hour                  format a19                 heading 'User Sample Hour'\n"
+      Sql += "col user_username                     format a20                 heading 'User Username'\n"
+      Sql += "col user_time                         format 999,999,999,999,999 heading 'User Delta Time'\n"
+      Sql += "col user_read_io_requests             format 999,999,999,999,999 heading 'User Read IO Req.'\n"
+      Sql += "col user_write_io_requests            format 999,999,999,999,999 heading 'User Write IO Req.'\n"
+      Sql += "col user_read_io_bytes                format 999,999,999,999,999 heading 'User Read Bytes'\n"
+      Sql += "col user_write_io_bytes               format 999,999,999,999,999 heading 'User Write Bytes'\n"
+      Sql += "col user_io_req                       format 999,999,999,999,999 heading 'User IO Req.'\n"
+      Sql += "col user_io_bytes                     format 999,999,999,999,999 heading 'User IO Bytes'\n"
+      Sql += "col user_interconnect_io_bytes        format 999,999,999,999,999 heading 'User Intercon. IO Bytes'\n"
+      Sql += "col user_pga_allocated                format 999,999,999,999,999 heading 'User PGA Allocated'\n"
+      Sql += "col user_temp_space_allocated         format 999,999,999,999,999 heading 'User Temp Space Allocated'\n"
+      Sql += "\n"
+      Sql += "col other_sample_hour                 format a19                 heading 'Other Sample Hour'\n"
+      Sql += "col other_username                    format a20                 heading 'Other Username'\n"
+      Sql += "col other_time                        format 999,999,999,999,999 heading 'Other Delta Time'\n"
+      Sql += "col other_read_io_requests            format 999,999,999,999,999 heading 'Other Read IO Req.'\n"
+      Sql += "col other_write_io_requests           format 999,999,999,999,999 heading 'Other Write IO Req.'\n"
+      Sql += "col other_read_io_bytes               format 999,999,999,999,999 heading 'Other Read Bytes'\n"
+      Sql += "col other_write_io_bytes              format 999,999,999,999,999 heading 'Other Write Bytes'\n"
+      Sql += "col other_io_req                      format 999,999,999,999,999 heading 'Other IO Req.'\n"
+      Sql += "col other_io_bytes                    format 999,999,999,999,999 heading 'Other IO Bytes'\n"
+      Sql += "col other_interconnect_io_bytes       format 999,999,999,999,999 heading 'Other Intercon. IO Bytes'\n"
+      Sql += "col other_pga_allocated               format 999,999,999,999,999 heading 'Other PGA Allocated'\n"
+      Sql += "col other_temp_space_allocated        format 999,999,999,999,999 heading 'Other Temp Space Allocated'\n"
+      Sql += "\n"
+
+      Sql += "SELECT " + SqlHeader + "\n"
+      Sql += "       u.username                                     user_username\n"
+      Sql += "     , o.username                                     other_username\n"
+      Sql += "     , u.delta_time                                   user_time\n"
+      Sql += "     , o.delta_time                                   other_time\n"
+      Sql += "     , u.delta_read_io_requests                       user_read_io_requests\n"
+      Sql += "     , o.delta_read_io_requests                       other_read_io_requests\n"
+      Sql += "     , u.delta_write_io_requests                      user_write_io_requests\n"
+      Sql += "     , o.delta_write_io_requests                      other_write_io_requests\n"
+      Sql += "     , u.delta_read_io_bytes                          user_read_io_bytes\n"
+      Sql += "     , o.delta_read_io_bytes                          other_read_io_bytes\n"
+      Sql += "     , u.delta_write_io_bytes                         user_write_io_bytes\n"
+      Sql += "     , o.delta_write_io_bytes                         other_write_io_bytes\n"
+      Sql += "     , u.io_req                                       user_io_req\n"
+      Sql += "     , o.io_req                                       other_io_req\n"
+      Sql += "     , u.io_bytes                                     user_io_bytes\n"
+      Sql += "     , o.io_bytes                                     other_io_bytes\n"
+      Sql += "     , u.delta_interconnect_io_bytes                  user_interconnect_io_bytes\n"
+      Sql += "     , o.delta_interconnect_io_bytes                  other_interconnect_io_bytes\n"
+      Sql += "     , u.pga_allocated                                user_pga_allocated\n"
+      Sql += "     , o.pga_allocated                                other_pga_allocated\n"
+      Sql += "     , u.temp_space_allocated                         user_temp_space_allocated\n"
+      Sql += "     , o.temp_space_allocated                         other_temp_space_allocated\n"
+
+    Sql += "  FROM (   SELECT TRUNC(sample_time, 'HH24')                                                 sample_hour\n"
+    Sql += "                , 'User'                                                                     username\n"
+    Sql += "                , NVL(sum(delta_time), 0)                                                    delta_time\n"
+    Sql += "                , NVL(sum(delta_read_io_requests), 0)                                        delta_read_io_requests\n"
+    Sql += "                , NVL(sum(delta_write_io_requests), 0)                                       delta_write_io_requests\n"
+    Sql += "                , NVL(sum(delta_read_io_bytes), 0)                                           delta_read_io_bytes\n"
+    Sql += "                , NVL(sum(delta_write_io_bytes), 0)                                          delta_write_io_bytes\n"
+    Sql += "                , NVL(sum(delta_write_io_requests), 0) + nvl(sum(delta_read_io_requests), 0) io_req\n"
+    Sql += "                , NVL(sum(delta_write_io_bytes), 0) + nvl(sum(delta_read_io_bytes)   , 0)    io_bytes\n"
+    Sql += "                , NVL(sum(delta_interconnect_io_bytes), 0)                                   delta_interconnect_io_bytes\n"
+    Sql += "                , NVL(sum(pga_allocated), 0)                                                 pga_allocated\n"
+    Sql += "                , NVL(sum(temp_space_allocated), 0)                                          temp_space_allocated\n"
+    if (Awr) :
+      Sql += "             FROM dba_hist_active_sess_history ash\n"
+    elif (Global):
+      Sql += "             FROM gv$active_session_history ash\n"
+    else:
+      Sql += "             FROM v$active_session_history ash\n"
+    Sql += "                , dba_users users\n"
+    Sql += "            WHERE 1=1\n"
+    if (Instances != ''):
+      Sql += "              AND ash.inst_id IN (" + Instances + ")\n"
+    Sql += "              AND ash.user_id = users.user_id\n"
+    Sql += "              AND session_type = 'FOREGROUND'\n"
+    Sql += "              AND UPPER(users.username) IN ('" + '\',\''.join(UserList).upper() + "\')\n"
+    if (Awr):
+      Sql += "              AND sample_time BETWEEN to_date('" + BeginTime + "','" + BeginTimeFormat + "') and to_date('" + EndTime + "','" + EndTimeFormat + "')\n"
+    Sql += "         GROUP BY TRUNC(sample_time, 'HH24')\n"
+    Sql += "         ORDER BY TRUNC(sample_time, 'HH24')\n"
+    Sql += "       ) u\n"
+    Sql += "     , (   SELECT TRUNC(sample_time, 'HH24')                                                 sample_hour\n"
+    Sql += "                , 'Other'                                                                    username\n"
+    Sql += "                , NVL(sum(delta_time), 0)                                                    delta_time\n"
+    Sql += "                , NVL(sum(delta_read_io_requests), 0)                                        delta_read_io_requests\n"
+    Sql += "                , NVL(sum(delta_write_io_requests), 0)                                       delta_write_io_requests\n"
+    Sql += "                , NVL(sum(delta_read_io_bytes), 0)                                           delta_read_io_bytes\n"
+    Sql += "                , NVL(sum(delta_write_io_bytes), 0)                                          delta_write_io_bytes\n"
+    Sql += "                , NVL(sum(delta_write_io_requests), 0) + nvl(sum(delta_read_io_requests), 0) io_req\n"
+    Sql += "                , NVL(sum(delta_write_io_bytes), 0) + nvl(sum(delta_read_io_bytes)   , 0)    io_bytes\n"
+    Sql += "                , NVL(sum(delta_interconnect_io_bytes), 0)                                   delta_interconnect_io_bytes\n"
+    Sql += "                , NVL(sum(pga_allocated), 0)                                                 pga_allocated\n"
+    Sql += "                , NVL(sum(temp_space_allocated), 0)                                          temp_space_allocated\n"
+    if (Awr) :
+      Sql += "             FROM dba_hist_active_sess_history ash\n"
+    elif (Global):
+      Sql += "             FROM gv$active_session_history ash\n"
+    else:
+      Sql += "             FROM v$active_session_history ash\n"
+    Sql += "                , dba_users users\n"
+    Sql += "            WHERE 1=1\n"
+    if (Instances != ''):
+      Sql += "              AND ash.inst_id IN (" + Instances + ")\n"
+    Sql += "              AND ash.user_id = users.user_id\n"
+    Sql += "              AND session_type = 'FOREGROUND'\n"
+    Sql += "              AND UPPER(users.username) NOT IN ('" + '\',\''.join(UserList).upper() + "\')\n"
+    if (Awr):
+      Sql += "              AND sample_time BETWEEN to_date('" + BeginTime + "','" + BeginTimeFormat + "') and to_date('" + EndTime + "','" + EndTimeFormat + "')\n"
+    Sql += "         GROUP BY TRUNC(sample_time, 'HH24')\n"
+    Sql += "         ORDER BY TRUNC(sample_time, 'HH24')\n"
+    Sql += "       ) o\n"
+    Sql += " WHERE u.sample_hour = o.sample_hour;\n"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    if (Csv == True):
+      # Print CSV Header
+      print('\nSample Hour'              + Colsep + 'User Username'              + Colsep + 'Other Username'             + Colsep + \
+            'User Delta Time'            + Colsep + 'Other Delta Time'           + Colsep + 'User Read IO Req.'          + Colsep + \
+            'Other Read IO Req.'         + Colsep + 'User Write IO Req.'         + Colsep + 'Other Write IO Req.'        + Colsep + \
+            'User Read Bytes'            + Colsep + 'Other Read Bytes'           + Colsep + 'User Write Bytes'           + Colsep + \
+            'Other Write Bytes'          + Colsep + 'User IO Req.'               + Colsep + 'Other IO Req.'              + Colsep + \
+            'User IO Bytes'              + Colsep + 'Other IO Bytes'             + Colsep + 'User Intercon. IO Bytes'    + Colsep + \
+            'Other Intercon. IO Bytes'   + Colsep + 'User PGA Allocated'         + Colsep + 'Other PGA Allocated'        + Colsep + \
+            'User Temp Space Allocated'  + Colsep + 'Other Temp Space Allocated')
+      print('%s' % Stdout)
+    else:
+      print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

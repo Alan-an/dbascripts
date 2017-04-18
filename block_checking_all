@@ -1,0 +1,37 @@
+#!/bin/bash
+
+PARM=$1
+
+
+ps -ef | grep pmon | grep -v grep | grep -v perl | grep -v ASM | grep -v DBFS |\
+while read PMON; do
+  INST=`echo "$PMON" | awk {' print $8 '} | cut -f3 -d_`
+
+  MAIN_ENV=~/.env/main.env
+  if [ -r $MAIN_ENV ]; then
+     . $MAIN_ENV $INST
+  else
+     echo 'Could not open $MAIN_ENV for read.'
+  fi
+
+  sqlplus -s /nolog <<-EOF
+  connect / as sysdba
+
+  set lines  100
+  set pages  1000
+  col parm   format a60
+  col value  format a10
+  set head   off
+
+  select '$INST : ' || i.ksppinm "PARM", sv.ksppstvl value
+    from sys.x\$ksppi  i,
+         sys.x\$ksppsv sv
+   where i.indx = sv.indx
+     and (i.ksppinm like '%db_block_checking%'
+      or i.ksppinm like '%db_block_checksum%'
+      or i.ksppinm like '%db_lost_write_protect%')
+   order by i.ksppinm;
+EOF
+
+done
+

@@ -1,0 +1,149 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        backup_controlfile                                                                #
+# Author:      Randy Johnson                                                                     #
+# Description: alter database backup controlfile to [trace as] {filename} [reuse];               #
+#                                                                                                #
+# Usage: backup_controlfile [options]                                                            #
+#                                                                                                #
+# Options:                                                                                       #
+#   -h, --help  show this help message and exit                                                  #
+#   -b          make binary copy of controlfile (default=trace).                                 #
+#   -f CFILE    name of the backup file.                                                         #
+#   -r          force overwrite if backup file already exists.                                   #
+#   --s         print SQL query.                                                                 #
+#   --v         print version info.                                                              #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 10/09/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from os.path      import join as pathjoin
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+from Oracle       import PrintError
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Backup Controlfile to Trace'
+  Version        = '1.00'
+  VersionDate    = 'Thu Oct 22 10:05:37 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Now            = datetime.now()
+  Timestamp      = Now.strftime("%Y%m%d.%H%M%S")
+    
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-b',  dest='Binary',  action='store_true', default=False,           help="make binary copy of controlfile (default=trace).")
+  ArgParser.add_option("-f",  dest="Cfile",                        default='',    type=str, help="name of the backup file.")
+  ArgParser.add_option('-r',  dest='Reuse',   action='store_true', default=False,           help="force overwrite if backup file already exists.")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Binary    = Options.Binary
+  Cfile     = Options.Cfile
+  Reuse     = Options.Reuse
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (Cfile == ''):
+    if(environ['ORACLE_SID'] != ''):
+      Cfile = pathjoin('/', 'tmp', 'cf_' + environ['ORACLE_SID'] + '.' + Timestamp)
+    else:
+      Cfile = pathjoin('/', 'tmp', 'cf_backup' + '.' + Timestamp)
+    if (Binary):
+      Cfile += '.bak'
+    else:
+      Cfile += '.trc'
+
+  # Formulate the backup command...
+  Sql += SqlHeader + "\n"
+
+  if (Binary):
+    Sql += "alter database backup controlfile to '" + Cfile + "'"
+  else:
+    Sql += "alter database backup controlfile to trace as '" + Cfile + "'"
+
+  if (Reuse):
+    Sql += ' reuse'
+
+  Sql += ';'
+      
+  if(Show):
+    print('\n-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and not Show):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  if (Binary):
+    print("\nCreating controlfile binary backup: %s" % Cfile)
+  else:
+    print("\nCreating controlfile trace backup: %s" % Cfile)
+
+  # Execute
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  Stdout = Stdout.strip()
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

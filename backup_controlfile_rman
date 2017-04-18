@@ -1,0 +1,137 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        backup_controlfile_rman                                                           #
+# Author:      Randy Johnson                                                                     #
+# Description: Takes an rman backup of the current controlfile.                                  #
+#                                                                                                #
+# Usage: backup_controlfile_rman [options]                                                       #
+#                                                                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 10/09/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from os.path      import join as pathjoin
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunRman
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+from Oracle       import PrintError
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'RMAN Backup Current Controlfile'
+  Version        = '1.00'
+  VersionDate    = 'Thu Oct 22 10:05:37 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Rcv            = ''
+  RcvHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Now            = datetime.now()
+  Timestamp      = Now.strftime("%Y%m%d.%H%M%S")
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option("-f",  dest="Cfile",                           default='',    type=str, help="name of the backup file.")
+  ArgParser.add_option('-s',  dest='ForStandby', action='store_true', default=False,           help="backup controlfile for standby.")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Cfile      = Options.Cfile
+  ForStandby = Options.ForStandby
+  Show       = Options.Show
+  ShowVer    = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit(1)
+  else:
+    print('')
+
+  if (Cfile == ''):
+    if(environ['ORACLE_SID'] != ''):
+      Cfile = pathjoin('/', 'tmp', 'cf_' + environ['ORACLE_SID'] + '.' + Timestamp)
+    else:
+      Cfile = pathjoin('/', 'tmp', 'cf_backup' + '.' + Timestamp)
+
+    if (ForStandby):
+      Cfile += '.sby'
+    else:
+      Cfile += '.bak'
+
+  # Formulate the backup command...
+  if (ForStandby):
+    Rcv = "backup current controlfile for standby format '" + Cfile + "' tag for_standby;"
+  else:
+    Rcv = "backup current controlfile format '" + Cfile + "' tag controlfile_backup;"
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Rcv)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and not Show):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  if (ForStandby):
+    print("Creating controlfile backup for standby: %s" % Cfile)
+  else:
+    print("Creating controlfile backup: %s" % Cfile)
+
+  # Execute
+  if (ConnStr != ''):
+    (Stdout) = RunRman(Rcv, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunRman(Rcv, ErrChk)
+
+  Stdout = Stdout.strip()
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
+

@@ -1,0 +1,192 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        active_sql                                                                       #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report of currently executing SQL. The report includes:                 #
+#                 SQL_ID, CHILD, PLAN_HASH, EXECS, AVG_ETIME, AVG_LIO, and SQL_TEXT.             #
+#                                                                                                #
+#  Usage: active_sql [options]                                                                   #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help    show this help message and exit                                               #
+#    -g            search gv$... (default is v$...)                                              #
+#    -i INSTANCES  where inst_id in 1,2,3,...                                                    #
+#    -s            print SQL query.                                                              #
+#    -v            print version info.                                                           #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 04/13/2012 1.00 Randy Johnson    Initial write.                                                #
+# 05/14/2014 1.20 Randy Johnson    Fixed filter for "mysession". Added -s option.                #
+# 04/23/2015 1.30 Randy Johnson    Updated print statements for Python 3.4 compatibility. This   #
+#                                  is most commonly changes to the print() and join() functions. #
+#                                  Changed the SQL to use Sqlplus headings instead of printing   #
+#                                  them myself.                                                  #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 07/17/2015 2.20 Randy Johnson    Added prompts for username, password, tnsname.                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Active SQL'
+  Version        = '2.20'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  InstList       = []
+  
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-g',  dest='Global',     action='store_true', default=False,                 help="search gv$... (default is v$...)")
+  ArgParser.add_option('-i',  dest='Instances',                       default='',    type=str,       help="where inst_id in 1,2,3,...")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Global    = Options.Global
+  Instances = Options.Instances
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+  
+  # Assume gv$sysmetric if an instance list is specified.
+  if (not Global and Instances != ''):
+    Global = True
+  
+  if(Instances != ''):
+    InstList = Instances.split(',')
+    try:
+      if (version_info[0] >= 3):
+        InstList = list(map(int, InstList))
+        InstList = list(map(str, InstList))
+      else:
+        InstList = map(int, InstList)
+        InstList = map(str, InstList)
+    except:
+      print("Instance list must be in integer form, eg. -i 1,2,3,4")
+      exit(1)
+  
+  if (Global):
+    Sql += "column inst            format a4                          heading 'Inst'\n"
+  Sql += "column sid             format a5                          heading 'SID  '\n"
+  Sql += "column program         format a20 trunc                   heading 'Program'\n"
+  Sql += "column address         format a20                         heading 'Address'\n"
+  Sql += "column hash_value      format a11                         heading 'Hash'\n"
+  Sql += "column plan_hash_value format a11                         heading 'Plan Hash'\n"
+  Sql += "column sql_id          format a14                         heading 'SQL ID'\n"
+  Sql += "column child           format a5                          heading 'Child'\n"
+  Sql += "column executions      format 999,999,999,999,999         heading 'Executions'\n"
+  Sql += "column avg_etime       format 999,999.99                  heading 'Avg. E-Time'\n"
+  Sql += "column sql_text        format a60 trunc                   heading 'SQL Text'\n"
+  Sql += "break on sql_text\n"
+  Sql += "\n"  
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         vs.inst_id inst\n"
+    Sql += "       , to_char(vs.sid) sid\n"
+  else:
+    Sql += "         to_char(vs.sid) sid\n"
+  Sql += "       , SUBSTR (vs.program, 1, 19) program\n"
+  Sql += "       , vq.address address\n"
+  Sql += "       , to_char(vq.hash_value) hash_value\n"
+  Sql += "       , to_char(vq.plan_hash_value) plan_hash_value\n"
+  Sql += "       , vq.sql_id\n"
+  Sql += "       , to_char(vq.child_number) child\n"
+  Sql += "       , vq.executions\n"
+  Sql += "       , (vq.elapsed_time/DECODE(NVL (vq.executions, 0), 0, 1, vq.executions))/1000000 avg_etime\n"
+  Sql += "       , vq.sql_text\n"
+  if (Global):
+    Sql += "    FROM gv$session vs\n"
+    Sql += "       , gv$sql vq\n"
+  else:
+    Sql += "    FROM v$session vs\n"
+    Sql += "       , v$sql vq\n"
+  Sql += "   WHERE vs.status = 'ACTIVE'\n"
+  if (Instances != ''):
+    Sql += "     AND vs.inst_id IN (" + Instances + ")\n"
+  Sql += "     AND vs.username IS NOT NULL\n"
+  Sql += "     AND vs.sql_id = vq.sql_id\n"
+  Sql += "     AND vs.sql_child_number = vq.child_number\n"
+  Sql += "     AND vq.sql_text NOT LIKE '%" + SqlHeader + "%'\n"
+  if (Global):
+    Sql += "     AND vs.inst_id = vq.inst_id\n"
+    Sql += "ORDER BY vs.inst_id\n"
+    Sql += "       , avg_etime desc;\n"
+  else:
+    Sql += "ORDER BY avg_etime desc;"
+  
+  Sql = Sql.strip()
+  
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,331 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        dbfsfree                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Determines the real freespace available in the mounted DBFS file system(s).      #
+#                                                                                                #
+#  usage: dbfsfree [options]                                                                     #
+#                                                                                                #
+#  options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -b          report in bytes                                                                 #
+#    -k          report in kilobytes                                                             #
+#    -m          report in megabytes                                                             #
+#    -g          report in gigabytes                                                             #
+#                                                                                                #
+#                                                                                                #
+#  Filesystem                Size                Used               Avail  Used%  Mounted on     #
+#  FS_DBFS      3,203,050,426,368      25,509,978,112   3,177,540,448,256  0.80  /dbfs/dbfs      #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 10/11/2012 1.02 Randy Johnson    Removed the dbfs user password from the script.               #
+# 10/11/2012 1.03 Randy Johnson    Internal documentation.                                       #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+import profile
+import traceback
+
+from decimal     import Decimal
+from optparse    import OptionParser
+from os          import environ
+from os          import path
+from os          import statvfs
+from re          import match
+from re          import search
+from signal      import SIGPIPE
+from signal      import SIG_DFL
+from signal      import signal
+from socket      import gethostname
+from subprocess  import Popen
+from subprocess  import PIPE
+from subprocess  import STDOUT
+from sys         import argv
+from sys         import exc_info
+from sys         import exit
+from Oracle      import SetOracleEnv
+from Oracle      import GetAsmHome
+from Oracle      import RunSqlplus
+from Oracle      import FormatNumber
+
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+
+# ---------------------------------------------------------------------------
+# Def : GetDbfsInfo()
+# Desc: 
+#       
+# Args: 
+# Retn: 
+# ---------------------------------------------------------------------------
+def GetDbfsInfo(DbfsResourceName):
+  ActionScriptName = ''
+  DBFSDbname       = ''
+  DBFSUsername     = ''
+  DbfsInstname     = ''  
+  
+  # Run down the action script so you can find the DBFS user and DBFS database name.
+  proc   = Popen([CrsCtl, 'status', 'resource', DbfsResourceName, '-p'], bufsize=1, stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+  Stdout = proc.stdout.read()   # store the stdout in string format...
+  Stdout = Stdout.rstrip()      # remove any trailing white spaces...
+
+  for line in Stdout.split('\n'):
+    matchObj = match('ACTION_SCRIPT=.*', line)
+    if (matchObj):
+      (junk, ActionScriptName) =  matchObj.group().split('=')
+
+  if (ActionScriptName == ''):
+    print('Unable to determine action script name for: ', DbfsResourceName, '.')
+    exit(1)
+
+  try:
+    ActionScript = open(ActionScriptName)
+  except:
+    formatExceptionInfo()
+    print('Cannot open action script: ' + ActionScriptName + ' for read.')
+    exit(1)
+ 
+  ActionScriptContents = ActionScript.read().split('\n')
+  for line in ActionScriptContents:
+    # DBNAME=DBFS
+    # DBFS_USER=dbfs
+   
+    matchObj = match('DBNAME=.*', line)
+    if (matchObj):
+      (junk, DbfsDbname) =  matchObj.group().split('=')
+    
+    matchObj = match('DBFS_USER=.*', line)
+    if (matchObj):
+      (junk, DbfsUsername) =  matchObj.group().split('=')
+
+    matchObj = match('MOUNT_POINT=.*', line)
+    if (matchObj):
+      (junk, DbfsMountpoint) =  matchObj.group().split('=')
+
+    matchObj = match('DBFS_PASSWD=.*', line)
+    if (matchObj):
+      (junk, DbfsPassword) =  matchObj.group().split('=')
+
+    matchObj = match('MOUNT_POINT=.*', line)
+    if (matchObj):
+      (junk, DbfsMountpoint) =  matchObj.group().split('=')
+
+  # Fetch the local instance name for the DBFS database
+  proc   = Popen([CrsCtl, 'status', 'resource', 'ora.' + DbfsDbname.lower() + '.db', '-p'], bufsize=1, stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+  Stdout = proc.stdout.read()   # store the stdout in string format...
+  Stdout = Stdout.rstrip()      # remove any trailing white spaces...
+
+  for line in Stdout.split('\n'):
+    # GEN_USR_ORA_INST_NAME@SERVERNAME(td01db01)=DBFS1
+    matchObj = match('GEN_USR_ORA_INST_NAME@SERVERNAME\('+ Hostname + '\)=.*', line)
+    if (matchObj):
+      (junk, DbfsInstname) =  matchObj.group().split('=')
+    
+  return(DbfsDbname,DbfsInstname,DbfsUsername,DbfsPassword,DbfsMountpoint)
+# ---------------------------------------------------------------------------
+# End GetDbfsInfo()
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Def : DiskUsage()
+# Desc:                                                                      
+#                                                                            
+#                                                                            
+# Args:                                                                      
+# Retn:                                                                      
+# ---------------------------------------------------------------------------
+def DiskUsage(Filesystem):
+  st    = statvfs(Filesystem)
+  free  = st.f_bavail * st.f_frsize
+  total = st.f_blocks * st.f_frsize
+  used  = (st.f_blocks - st.f_bfree) * st.f_frsize
+  
+  return (int(total), int(used), int(free))
+# ---------------------------------------------------------------------------
+# End DiskUsage
+# ---------------------------------------------------------------------------
+
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+
+# ==============================================================================
+#  Main Program
+# ==============================================================================
+if (__name__ == '__main__'):
+  Cmd                 = path.split(argv[0])[1]
+  CmDDesc             = 'DFS Free'
+  Version             = '2.00'
+  Sqlplus             = environ['ORACLE_HOME'] + '/bin/sqlplus'
+  argc                = len(argv)
+  DbfsClusterRes      = 'ora.dbfs.filesystem'
+  OratabFile          = '/etc/oratab'
+  Hostname            = gethostname().split('.')[0]
+  Filesystem          = ''
+  LobSegment          = ''
+  DbfsStore           = ''
+  DbfsMountpoint      = ''
+  DbfsVolume          = ''
+  DbfsExpiredBlocks   = 0
+  DbfsExpiredBytes    = 0
+  DbfsUnExpiredBlocks = 0
+  DbfsUnExpiredBytes  = 0
+
+  # For handling termination in stdout pipe.
+  #  ex. when you run: oerrdump | head
+  #--------------------------------------------
+  #signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+  signal(SIGPIPE, SIG_DFL)
+
+  # Process command line options
+  # ----------------------------------
+  ArgParser = OptionParser()
+  ArgParser.add_option("-b", action="store_true", dest="Bytes",  default=False, help="report in bytes")
+  ArgParser.add_option("-k", action="store_true", dest="Kbytes", default=False, help="report in kilobytes")
+  ArgParser.add_option("-m", action="store_true", dest="Mbytes", default=False, help="report in megabytes")
+  ArgParser.add_option("-g", action="store_true", dest="Gbytes", default=False, help="report in gigabytes")
+  Options, args = ArgParser.parse_args()
+
+  # Setup the Oracle environment and set paths to the Oracle commands.
+  # -------------------------------------------------------------------
+  AsmHome = GetAsmHome()
+  if (AsmHome):
+    Sqlplus  = AsmHome + '/bin/sqlplus'
+    CrsCtl   = AsmHome + '/bin/crsctl'
+  else:
+    print('Error setting the ORACLE_HOME to the Grid Infrastructure (AsmHome)')
+    exit(1)
+
+  (DbfsDbname,DbfsInstname,DbfsUsername,DbfsPassword,DbfsMountpoint) = GetDbfsInfo(DbfsClusterRes)
+
+  # Setup the Oracle environment and setup Oracle commands.
+  # --------------------------------------------------------
+  (OracleSid,OracleHome) = SetOracleEnv(DbfsInstname)
+  if (OracleHome):
+    Sqlplus  = OracleHome + '/bin/sqlplus'
+    Tnsping  = OracleHome + '/bin/tnsping'
+  
+  LobSQL  = "select 'DBFS_FREE:Lob Segment:' || min(segment_name)\n"
+  LobSQL += "  from user_segments\n" 
+  LobSQL += " where segment_type = 'LOBSEGMENT';\n"
+  (Sqlout) = RunSqlplus(LobSQL)
+
+  for line in Sqlout.split('\n'):
+    matchObj = search('DBFS_FREE:Lob Segment:.*', line)
+    if (matchObj):
+      (Label, ColHeader, Value) = matchObj.group().split(':')
+      LobSegment = Value
+
+  SQL  = "set echo off"                                                                 + '\n'
+  SQL += "set feedback off"                                                             + '\n'
+  SQL += "set heading off"                                                              + '\n'
+  SQL += "set pages 0"                                                                  + '\n'
+  SQL += "set serveroutput on"                                                          + '\n'
+  SQL += "declare"                                                                      + '\n'
+  SQL += "  v_segment_size_blocks number;"                                              + '\n'
+  SQL += "  v_segment_size_bytes number;"                                               + '\n'
+  SQL += "  v_used_blocks number;"                                                      + '\n'
+  SQL += "  v_used_bytes number;"                                                       + '\n'
+  SQL += "  v_expired_blocks number;"                                                   + '\n'
+  SQL += "  v_expired_bytes number;"                                                    + '\n'
+  SQL += "  v_unexpired_blocks number;"                                                 + '\n'
+  SQL += "  v_unexpired_bytes number;"                                                  + '\n\n'
+  SQL += "begin"                                                                        + '\n'
+  SQL += "   dbms_space.space_usage ("                                                  + '\n'
+  SQL += "      '" + DbfsUsername.upper() + "',"                                        + '\n'
+  SQL += "      '" + LobSegment + "',"                                                  + '\n'
+  SQL += "      'LOB',"                                                                 + '\n'
+  SQL += "      v_segment_size_blocks,"                                                 + '\n'
+  SQL += "      v_segment_size_bytes,"                                                  + '\n'
+  SQL += "      v_used_blocks,"                                                         + '\n'
+  SQL += "      v_used_bytes,"                                                          + '\n'
+  SQL += "      v_expired_blocks,"                                                      + '\n'
+  SQL += "      v_expired_bytes,"                                                       + '\n'
+  SQL += "      v_unexpired_blocks,"                                                    + '\n'
+  SQL += "      v_unexpired_bytes );"                                                   + '\n'
+  SQL += "   dbms_output.put_line('DBFS_FREE:Expired Blocks:'  || v_expired_blocks);"   + '\n'
+  SQL += "   dbms_output.put_line('DBFS_FREE:Expired Bytes:'   || v_expired_bytes);"    + '\n'
+  SQL += "   dbms_output.put_line('DBFS_FREE:UNExpired Blocks:'|| v_unexpired_blocks);" + '\n'
+  SQL += "   dbms_output.put_line('DBFS_FREE:UNExpired Bytes:' || v_unexpired_bytes);"  + '\n'
+  SQL += "end;"                                                                         + '\n'
+  SQL += "/"                                                                            + '\n\n'
+  SQL += "select distinct 'DBFS_FREE:Store Mount:' || store || '~' || mount"            + '\n'
+  SQL += "  from DBFS_CONTENT;"                                                         + '\n'
+
+  (Sqlout) = RunSqlplus(SQL)
+  
+  # Print the output
+  for line in Sqlout.split('\n'):
+    matchObj = search('DBFS_FREE:.*:.*', line)
+    if (matchObj):
+      (Label, ColHeader, Value) = matchObj.group().split(':')
+      if (ColHeader == 'Expired Blocks'):
+        DbfsExpiredBlocks = int(Value)
+      elif (ColHeader == 'Expired Bytes'):
+        DbfsExpiredBytes = int(Value)
+      elif (ColHeader == 'UNExpired Blocks'):
+        DbfsUnExpiredBlocks = int(Value)
+      elif (ColHeader == 'UNExpired Bytes'):
+        DbfsUnExpiredBytes = int(Value)
+      elif (ColHeader == 'Store Mount'):
+        (DbfsStore, DbfsVolume) = Value.split('~')
+
+  (Total, Used, Free) = DiskUsage(DbfsMountpoint)
+
+  DbfsFreeBytes  = (Free + DbfsExpiredBytes + DbfsUnExpiredBytes)
+  DbfsFreeKbytes = DbfsFreeBytes  / 1024
+  DbfsFreeMbytes = DbfsFreeKbytes / 1024
+  DbfsFreeGbytes = DbfsFreeMbytes / 1024
+  
+  DbfsUsedBytes   = Used
+  DbfsUsedKbytes = DbfsUsedBytes  / 1024
+  DbfsUsedMbytes = DbfsUsedKbytes / 1024
+  DbfsUsedGbytes = DbfsUsedMbytes / 1024
+  
+  DbfsTotalBytes  = Used + DbfsFreeBytes
+  DbfsTotalKbytes = DbfsTotalBytes  / 1024
+  DbfsTotalMbytes = DbfsTotalKbytes / 1024
+  DbfsTotalGbytes = DbfsTotalMbytes / 1024
+  
+  UsedPct = (Decimal(DbfsUsedKbytes)/Decimal(DbfsTotalKbytes)) * 100
+
+  # Format the output...
+  DbfsTotalBytes  = FormatNumber(DbfsTotalBytes )
+  DbfsTotalKbytes = FormatNumber(DbfsTotalKbytes)
+  DbfsTotalMbytes = FormatNumber(DbfsTotalMbytes)
+  DbfsTotalGbytes = FormatNumber(DbfsTotalGbytes)
+  
+  DbfsFreeBytes  = FormatNumber(DbfsFreeBytes )
+  DbfsFreeKbytes = FormatNumber(DbfsFreeKbytes)
+  DbfsFreeMbytes = FormatNumber(DbfsFreeMbytes)
+  DbfsFreeGbytes = FormatNumber(DbfsFreeGbytes)
+  
+  DbfsUsedBytes  = FormatNumber(DbfsUsedBytes )
+  DbfsUsedKbytes = FormatNumber(DbfsUsedKbytes)
+  DbfsUsedMbytes = FormatNumber(DbfsUsedMbytes)
+  DbfsUsedGbytes = FormatNumber(DbfsUsedGbytes)
+  
+  print('Filesystem                Size                Used               Avail  Used%  Mounted on')
+  if (Options.Bytes) or ((not Options.Kbytes) and (not Options.Mbytes) and (not Options.Gbytes)):
+    print('%-10s  %18s  %18s  %18s  %4.2f  %-18s'  % (DbfsStore, DbfsTotalBytes,  DbfsUsedBytes,  DbfsFreeBytes,  UsedPct, (DbfsMountpoint + '/' + DbfsVolume)))
+  if (Options.Kbytes):
+    print('%-10s  %18s  %18s  %18s  %4.2f  %-18s'  % (DbfsStore, DbfsTotalKbytes, DbfsUsedKbytes, DbfsFreeKbytes, UsedPct, (DbfsMountpoint + '/' + DbfsVolume)))
+  if (Options.Mbytes):
+    print('%-10s  %18s  %18s  %18s  %4.2f  %-18s'  % (DbfsStore, DbfsTotalMbytes, DbfsUsedMbytes, DbfsFreeMbytes, UsedPct, (DbfsMountpoint + '/' + DbfsVolume)))
+  if (Options.Gbytes):
+    print('%-10s  %18s  %18s  %18s  %4.2f  %-18s'  % (DbfsStore, DbfsTotalGbytes, DbfsUsedGbytes, DbfsFreeGbytes, UsedPct, (DbfsMountpoint + '/' + DbfsVolume)))
+    
+  exit(0)
+

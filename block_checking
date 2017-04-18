@@ -1,0 +1,19 @@
+#!/bin/bash
+
+sqlplus -s /nolog <<-EOF
+connect / as sysdba
+
+  set lines  100
+  set pages  1000
+  col parm   format a60
+  col value  format a10
+
+  select i.ksppinm name, sv.ksppstvl value
+    from sys.x\$ksppi  i,
+         sys.x\$ksppsv sv
+   where i.indx = sv.indx
+     and (i.ksppinm like '%db_block_checking%'
+      or i.ksppinm like '%db_block_checksum%'
+      or i.ksppinm like '%db_lost_write_protect%')
+   order by i.ksppinm;
+EOF

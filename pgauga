@@ -1,0 +1,173 @@
+#!/bin/env python
+
+#!/bin/env python
+
+##################################################################################################
+#  Name:        pgauga                                                                           #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Session level PGA & UGA memory information.                                      #
+#                                                                                                #
+#  usage: pga_uga [options]                                                                      #
+#                                                                                                #
+#  options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -l LINES    limit output to nnn rows (default 0=off)                                        #
+#    -s          print SQL query.                                                                #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/02/2014 1.00 Randy Johnson    Initial write.                                                #
+# 08/12/2015 3.00 Randy Johnson    Updated print statements for Python 3.4 compatibility. This   #
+#                                  is most commonly changes to the print() and join() functions. #
+#                                  Changed the SQL to use Sqlplus headings instead of printing   #
+#                                  them myself. Added prompts for username, password, tnsname.   #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'PGA / UGA Memory Usage'
+  Version        = '3.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  InstList       = []
+  
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option("--s", dest="Show",    default=False, action="store_true",           help="print SQL query.")
+  ArgParser.add_option("--v", dest="ShowVer", default=False, action="store_true",           help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+  
+  Sql += "set pagesize 100\n"
+  Sql += "column sid                     format a5             heading 'SID'\n"
+  Sql += "column oracle_username         format a20            heading 'Oracle User'\n"
+  Sql += "column os_username             format a10            heading 'O/S User'\n"
+  Sql += "column session_program         format a40            heading 'Session Program' trunc\n"
+  Sql += "column session_module          format a30            heading 'Session Module' trunc\n"
+  Sql += "column session_machine         format a30            heading 'Machine' wrap\n"
+  Sql += "column session_pga_memory      format 9,999,999,999  heading 'PGA Memory'\n"
+  Sql += "column session_pga_memory_max  format 9,999,999,999  heading 'PGA Memory Max'\n"
+  Sql += "column session_uga_memory      format 9,999,999,999  heading 'UGA Memory'\n"
+  Sql += "column session_uga_memory_max  format 9,999,999,999  HEADING 'UGA Memory MAX'\n"
+  Sql += "\n"
+  Sql += "column one noprint\n"
+  Sql += "compute sum of session_pga_memory on one\n"
+  Sql += "break on one\n"
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       1 one\n"
+  Sql += "     , TO_CHAR(s.sid) sid\n"
+  Sql += "     , s.username     oracle_username\n"
+  Sql += "     , s.osuser       os_username\n"
+  Sql += "     , s.module       session_module\n"
+  Sql += "     , s.program      session_program\n"
+  Sql += "     , s.machine      session_machine\n"
+  Sql += "     , (SELECT ss.value\n"
+  Sql += "          FROM v$sesstat  ss\n"
+  Sql += "             , v$statname sn\n"
+  Sql += "         WHERE ss.sid          = s.sid\n"
+  Sql += "           AND sn.statistic#   = ss.statistic#\n"
+  Sql += "           AND sn.name         = 'session pga memory'\n"
+  Sql += "       ) session_pga_memory\n"
+  Sql += "     , (SELECT ss.value\n"
+  Sql += "          FROM v$sesstat  ss\n"
+  Sql += "             , v$statname sn\n"
+  Sql += "         WHERE ss.sid          = s.sid\n"
+  Sql += "           AND sn.statistic#   = ss.statistic#\n"
+  Sql += "           AND sn.name         = 'session pga memory max'\n"
+  Sql += "       ) session_pga_memory_max\n"
+  Sql += "     , (SELECT ss.value\n"
+  Sql += "          FROM v$sesstat  ss\n"
+  Sql += "             , v$statname sn\n"
+  Sql += "         WHERE ss.sid          = s.sid\n"
+  Sql += "           AND sn.statistic#   = ss.statistic#\n"
+  Sql += "           AND sn.name         = 'session uga memory'\n"
+  Sql += "       ) session_uga_memory\n"
+  Sql += "     , (SELECT ss.value\n"
+  Sql += "          FROM v$sesstat  ss\n"
+  Sql += "             , v$statname sn\n"
+  Sql += "         WHERE ss.sid          = s.sid\n"
+  Sql += "           AND sn.statistic#   = ss.statistic#\n"
+  Sql += "           AND sn.name         = 'session uga memory max'\n"
+  Sql += "       ) session_uga_memory_max\n"
+  Sql += "  FROM v$session  s;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

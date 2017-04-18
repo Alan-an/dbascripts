@@ -1,0 +1,208 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        awr_plan_stats                                                                   #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report of SQL execution plan statistics for a SQL_ID                    #
+#                                                                                                #
+#               Credit to Kerry Osborne for the core logic in the SQL queries.                   #
+#               See http://kerryosborne.oracle-guy.com/2008/10/unstable-plans/ for more info.    #
+#                                                                                                #
+#  Usage: awr_plan_stats [options]                                                               #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help    show this help message and exit                                               #
+#    -b BEGINTIME  AWR snap time >= BeginTime (default '1960-01-01 00:00:00')                    #
+#    -e ENDTIME    AWR snap time <= EndTime   (default '2015-08-01 22:03:13')                    #
+#    -r ROWS       limit output to nnn rows   (default 0=off)                                    #
+#    -i SQLID      value for sql_id                                                              #
+#    -s            print SQL query                                                               #
+#    -v            print version info.                                                           #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/21/2015 1.00 Randy Johnson    Initial write.                                                #
+# 07/21/2015 2.00 Randy Johnson    Updated print(statements for Python 3.4 compatibility.        #
+# 08/01/2015 2.10 Randy Johnson    Added prompts for username, password, tnsname.                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from signal       import SIG_DFL
+from signal       import SIGPIPE
+from signal       import signal
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from Oracle       import ParseConnectString
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ValidateDate
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'AWR Plan Stats'
+  Version        = '2.10'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  TnsName        = ''
+  Username       = ''
+  Password       = ''
+  ConnStr        = ''
+  Now            = datetime.now()
+  EndTime        = (Now.strftime('%Y-%m-%d %H:%M:%S'))
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-b',  dest='BeginTime',                      default='1960-01-01 00:00:00', type=str, help="AWR snap time >= BeginTime (default '1960-01-01 00:00:00')")
+  ArgParser.add_option('-e',  dest='EndTime',                        default=EndTime,               type=str, help="AWR snap time <= EndTime   (default '" + EndTime + "')")
+  ArgParser.add_option('-r',  dest='Rows',                           default=0,                     type=int, help="limit output to nnn rows   (default 0=off)")
+  ArgParser.add_option("-i",  dest="SqlId",                          default='',                    type=str, help="value for sql_id")
+  ArgParser.add_option("--s", dest="Show",      action="store_true", default=False,                           help="print SQL query")
+  ArgParser.add_option('--v', dest='ShowVer',   action='store_true', default=False,                           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  BeginTime   = Options.BeginTime
+  EndTime     = Options.EndTime
+  Rows        = str(Options.Rows)
+  SqlId       = Options.SqlId
+  Show        = Options.Show
+  ShowVer     = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  ###~if (SqlId == ''):
+  ###~  if (version_info[0] >= 3):
+  ###~    SqlId = input('\nEnter a SQL ID: ')
+  ###~  else:
+  ###~    SqlId = raw_input('\nEnter a SQL ID: ')
+  ###~  if (SqlId == ''):
+  ###~    print('\nSQL ID is required.')
+  ###~    exit(1)
+
+  (ValidDate, BeginTimeFormat) = ValidateDate(BeginTime)
+  if (ValidDate == False):
+    print("Invalid format for BeginTime. Acceptable formats follow:")
+    print("  'YYYY-MM-DD'")
+    print("  'YYYY-MM-DD HH24'")
+    print("  'YYYY-MM-DD HH24:MI'")
+    print("  'YYYY-MM-DD HH24:MI:SS'")
+    exit(1)
+
+  (ValidDate, EndTimeFormat) = ValidateDate(EndTime)
+  if (ValidDate == False):
+    print("Invalid format for EndTime. Acceptable formats follow:")
+    print("  'YYYY-MM-DD'")
+    print("  'YYYY-MM-DD HH24'")
+    print("  'YYYY-MM-DD HH24:MI'")
+    print("  'YYYY-MM-DD HH24:MI:SS'")
+    exit(1)
+  
+  Sql += "column sql_id               format a14            heading 'SQL ID'\n"
+  Sql += "column plan_hash_value     format 999999999999999 heading 'Plan Hash Value'\n"
+  Sql += "column execs               format 999,999,999     heading 'Executions'\n"
+  Sql += "column etime               format 999,999,999.9   heading 'Elapse Time'\n"
+  Sql += "column avg_etime           format 999,999.999     heading 'Avg Elapse Time'\n"
+  Sql += "column avg_cpu_time        format 999,999.999     heading 'Avg CPU Time'\n"
+  Sql += "column avg_lio             format 999,999,999.9   heading 'Avg LIO'\n"
+  Sql += "column avg_pio             format 9,999,999.9     heading 'Avg PIO'\n"
+  Sql += "column begin_interval_time format a30             heading 'Begin Interval Time'\n"
+  Sql += "\n"
+  Sql += "break on plan_hash_value on startup_time skip 1\n"
+  Sql += "   SELECT " + SqlHeader + "\n"
+  Sql += "          sql_id\n"
+  Sql += "        , plan_hash_value\n"
+  Sql += "        , DECODE (SUM (execs), 0, 1, SUM (execs)) execs\n"
+  Sql += "        , SUM (etime) etime\n"
+  Sql += "        , SUM (etime) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_etime\n"
+  Sql += "        , SUM (cpu_time) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_cpu_time\n"
+  Sql += "        , SUM (lio) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_lio\n"
+  Sql += "        , SUM (pio) / DECODE (SUM (execs), 0, 1, SUM (execs)) avg_pio\n"
+  Sql += "     FROM (SELECT ss.snap_id\n"
+  Sql += "                , ss.instance_number inst\n"
+  Sql += "                , begin_interval_time\n"
+  Sql += "                , sql_id\n"
+  Sql += "                , plan_hash_value\n"
+  Sql += "                , NVL (executions_delta, 0) execs\n"
+  Sql += "                , elapsed_time_delta / 1000000 etime\n"
+  Sql += "                , (elapsed_time_delta/DECODE(NVL(executions_delta, 0), 0, 1, executions_delta))/1000000 avg_etime\n"
+  Sql += "                , buffer_gets_delta lio\n"
+  Sql += "                , disk_reads_delta pio\n"
+  Sql += "                , cpu_time_delta / 1000000 cpu_time\n"
+  Sql += "                , (buffer_gets_delta/DECODE(NVL(buffer_gets_delta, 0), 0, 1, executions_delta)) avg_lio\n"
+  Sql += "                , (cpu_time_delta/DECODE(NVL(executions_delta, 0), 0, 1, executions_delta)) avg_cpu_time\n"
+  Sql += "             FROM DBA_HIST_SQLSTAT S, DBA_HIST_SNAPSHOT SS\n"
+  if (SqlId != ''):
+    Sql += "            WHERE s.sql_id = '" + SqlId + "'\n"
+    Sql += "              AND ss.snap_id = s.snap_id\n"
+  else:              
+    Sql += "            WHERE ss.snap_id = s.snap_id\n"
+  Sql += "              AND ss.instance_number = S.instance_number\n"
+  Sql += "              AND ss.begin_interval_time >= TO_DATE('" + BeginTime + "', '" + BeginTimeFormat + "')\n"
+  Sql += "              AND ss.end_interval_time   <= TO_DATE('" + EndTime   + "', '" + EndTimeFormat   + "')\n"
+  Sql += "          )\n"
+  if (Rows != '0'):
+    Sql += "    WHERE rownum <= " + Rows + "\n";
+  Sql += " GROUP BY sql_id\n"
+  Sql += "        , plan_hash_value\n"
+  Sql += " ORDER BY avg_etime;"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

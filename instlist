@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+
+##################################################################################################
+#  Name:        instlist                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a list of all Oracle database instances running on the local machine.     #
+#               Instance names in the printed output are preceeded by their process id.          #
+#                                                                                                #
+#  Usage: instlist [options]                                                                     #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -p          Display pmon process id.                                                        #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/27/2012 1.00 Randy Johnson    Initial release.                                              #
+# 09/11/2012 1.01 Randy Johnson    Replaced Proc.stdout.readlines() with Proc.communicate().     #
+# 09/11/2012 1.01 Randy Johnson    Added -p option for printing pmon process id.                 #
+# 09/11/2012 1.02 Randy Johnson    Renamed to instlist                                           #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+import os
+from optparse     import OptionParser
+from os.path      import basename
+from signal       import signal
+from subprocess   import Popen
+from subprocess   import PIPE
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from subprocess   import STDOUT
+from sys          import argv
+from sys          import exit
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):      # if this is true, then this script is *not* being imported by another Python script.
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'List Running Oracle Database Instances'
+  Version        = '2.20'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  ArgParser      = OptionParser()
+  Ps             = '/bin/ps'
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option("-p",  dest="PmonProcess", action="store_true", default=False, help="Display pmon process id.")
+  ArgParser.add_option('--v', dest='ShowVer',     action='store_true', default=False, help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  Proc = Popen([Ps, '-ef'], bufsize=1, stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
+
+  # Stderr is just a placeholder. We redirected stderr to stdout as follows 'stderr=STDOUT'.
+  (Stdout,Stderr) = Proc.communicate()
+  Stdout = Stdout.strip()
+  
+  if (Options.PmonProcess == True):
+    print('Instance          Pmon PID')
+    print('----------------- -----------')
+
+  for Line in Stdout.split('\n'):
+    (Splt) = Line.split()
+    Uid, Pid, Ppid, C, Stime, Tty, Time, Cmd = Splt[0], Splt[1], Splt[2], Splt[3], Splt[4], Splt[5], Splt[6] , Splt[7] 
+    pos = Cmd.find('ora_pmon_', 0, 9)
+    if (pos >= 0):
+      InstName = Cmd[9:]
+      if (Options.PmonProcess == True):
+        print('%-17s %-12s' % (InstName, Pid))
+      else:
+        print(InstName)
+
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,157 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        spdo                                                                             #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints a report of DBA_SQL_PLAN_DIR_OBJECTS.                                     #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 09/29/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'SQL Plan Directive Objects'
+  Version        = '1.00'
+  VersionDate    = 'Mon Sep 28 13:35:14 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  OwnerList      = []
+  ExcludeList    = []
+
+  ExcludeList.append('ANONYMOUS')
+  ExcludeList.append('CTXSYS')
+  ExcludeList.append('DBSNMP')
+  ExcludeList.append('DIP')
+  ExcludeList.append('DMSYS')
+  ExcludeList.append('EXFSYS')
+  ExcludeList.append('MDSYS')
+  ExcludeList.append('MGMT_VIEW')
+  ExcludeList.append('OLAPSYS')
+  ExcludeList.append('ORDPLUGINS')
+  ExcludeList.append('ORDDATA')
+  ExcludeList.append('ORDSYS')
+  ExcludeList.append('OUTLN')
+  ExcludeList.append('SI_INFORMTN_SCHEMA')
+  ExcludeList.append('SYS')
+  ExcludeList.append('SYSMAN')
+  ExcludeList.append('SYSTEM')
+  ExcludeList.append('WMSYS')
+  ExcludeList.append('XDB')
+  ExcludeList.append('XS$NULL')
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-f',  dest='Filter',  action='store_true', default=False,           help="filter out Oracle schemas: sys, system, dbsnmp, ...")
+  ArgParser.add_option('-o',  dest='Owners',                       default='',    type=str, help="where owner in (owner1,owner2,owner3, ...)")
+  ArgParser.add_option('-s',  dest='SortBy',                       default='',    type=str, help="order by 1,2,3 ... (default = owner, object_name)")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Filter    = Options.Filter
+  Owners    = Options.Owners
+  SortBy    = Options.SortBy
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  if(Owners != ''):
+    OwnerList = Owners.upper().split(',')
+
+  Sql += "column directive_id   format 999999999999999999999999 heading 'Directive ID'\n"
+  Sql += "col owner             format a25                      heading 'Owner'\n"
+  Sql += "col object_name       format a30                      heading 'Object Name'\n"
+  Sql += "col subobject_name    format a30                      heading 'Subobject Name'\n"
+  Sql += "col object_type       format a6                       heading 'Type'\n"
+  Sql += "col notes             format a71                      heading 'Notes'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         directive_id\n"
+  Sql += "       , owner\n"
+  Sql += "       , object_name\n"
+  Sql += "       , subobject_name\n"
+  Sql += "       , object_type\n"
+  Sql += "       , notes\n"
+  Sql += "    FROM dba_sql_plan_dir_objects\n"
+  Sql += "   WHERE 1=1\n"
+  if (OwnerList != []):
+    Sql += "   AND owner IN ('" + "','".join(OwnerList) + "')\n"
+  if (Filter and ExcludeList != []):
+    Sql += "   AND owner NOT IN (  '" + "'\n                      ,'".join(ExcludeList) + "'\n                    )\n"
+  if (SortBy != ''):
+    Sql += "ORDER BY " + SortBy + ";"
+  else:
+    Sql += "ORDER BY 2,3;"
+ 
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

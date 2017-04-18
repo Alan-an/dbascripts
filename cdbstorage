@@ -1,0 +1,157 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:                                                                                           #
+# Author:      Randy Johnson                                                                      #
+# Description:                                                                                    #
+#                                                                                                 #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who              Change Description                                             #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 09/23/2015 1.00 Randy Johnson    Initial write.                                                 #
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+#from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Container Database Storage Report'
+  Version        = '1.00'
+  VersionDate    = 'Wed Sep 23 11:50:25 EDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+    
+  Sql += SqlHeader
+  Sql += "\n\n"
+  Sql += "column con_id          format 999             heading 'ID  '\n"
+  Sql += "column con_name        format a15             heading 'Cont. Name'\n"
+  Sql += "column tablespace_name format a15             heading 'Tablespace'\n"
+  Sql += "column fsm             format 999,999,999,999 heading 'Free Space MB'\n"
+  Sql += "column apm             format 999,999,999,999 heading 'Alloc Space MB'\n"
+  Sql += "\n"
+  Sql += "compute sum of fsm apm on report\n"
+  Sql += "break on report on con_id on con_name on tablespace_name\n"
+  Sql += "\n"
+  Sql += "WITH x AS (  SELECT c1.con_id\n"
+  Sql += "                  , cf1.tablespace_name\n"
+  Sql += "                  , SUM(cf1.bytes)/1024/1024 fsm\n"
+  Sql += "               FROM cdb_free_space cf1\n"
+  Sql += "                  , v$containers   c1\n"
+  Sql += "              WHERE cf1.con_id = c1.con_id\n"
+  Sql += "           GROUP BY c1.con_id\n"
+  Sql += "                  , cf1.tablespace_name\n"
+  Sql += "          ),\n"
+  Sql += "     y AS (  SELECT c2.con_id\n"
+  Sql += "                  , cd.tablespace_name\n"
+  Sql += "                  , SUM(cd.bytes)/1024/1024 apm\n"
+  Sql += "               FROM cdb_data_files cd\n"
+  Sql += "                  , v$containers   c2\n"
+  Sql += "              WHERE cd.con_id = c2.con_id\n"
+  Sql += "           GROUP BY c2.con_id\n"
+  Sql += "                  , cd.tablespace_name\n"
+  Sql += "          )\n"
+  Sql += "   SELECT x.con_id\n"
+  Sql += "        , v.name con_name\n"
+  Sql += "        , x.tablespace_name\n"
+  Sql += "        , x.fsm\n"
+  Sql += "        , y.apm\n"
+  Sql += "     FROM x\n"
+  Sql += "        , y\n"
+  Sql += "        , v$containers v\n"
+  Sql += "    WHERE x.con_id = y.con_id\n"
+  Sql += "      AND   x.tablespace_name = y.tablespace_name\n"
+  Sql += "      AND   v.con_id = y.con_id\n"
+  Sql += " UNION\n"
+  Sql += "   SELECT vc2.con_id\n"
+  Sql += "        , vc2.name\n"
+  Sql += "        , tf.tablespace_name\n"
+  Sql += "        , null\n"
+  Sql += "        , SUM(tf.bytes)/1024/1024\n"
+  Sql += "     FROM v$containers vc2\n"
+  Sql += "        , cdb_temp_files tf\n"
+  Sql += "    WHERE vc2.con_id = tf.con_id\n"
+  Sql += " GROUP BY vc2.con_id\n"
+  Sql += "        , vc2.name\n"
+  Sql += "        , tf.tablespace_name\n"
+  Sql += " ORDER BY con_id\n"
+  Sql += "        , con_name;"
+  
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

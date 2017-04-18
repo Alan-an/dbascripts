@@ -1,0 +1,151 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        sqx (SQL Execute)                                                                #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Takes a sql script file from the command line and executes it in the database.   #
+#               If no connect string provided ORACLE_SID is used and authentication defaults to  #
+#               sys / as sysdba.                                                                 #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/06/2012 1.00 Randy Johnson    Initial release.                                              #
+# 09/19/2012 2.00 Randy Johnson    Cleanup, minor cosmetic changes, removed OptionParser.        #
+# 07/17/2015 3.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility. Added prompts for   #
+#                                  username, password, tnsname. Added -f option.                 #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+#from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from os.path      import isfile
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'SQL Execute'
+  Version        = '3.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  Usage  = Cmd + " [connect_string] [-f script] [-s] [-v] [-h]"
+  Usage += "\n\nExample:"
+  Usage += "\n  " + Cmd
+  Usage += "\n  " + Cmd + " -f myscript.sql"
+  Usage += "\n  " + Cmd + " scott -f myscript.sql"
+  Usage += "\n  " + Cmd + " scott@MYDB -f myscript.sql"
+  Usage += "\n  " + Cmd + " scott/tiger -f myscript.sql"
+  Usage += "\n  " + Cmd + " scott/tiger@MYDB -f myscript.sql"
+  Usage += "\n  " + Cmd + " scott/tiger@dbhost.com:1521/MYDB -f myscript.sql"
+  
+  ArgParser = OptionParser(usage=Usage)
+  ArgParser.add_option('-f',  dest='InputFile',                       default='',    type=str, help="SQL script to execute.")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,           help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+  argc = len(argv)
+
+  InputFile = Options.InputFile
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+  
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+  
+  if (not InputFile):
+    if (version_info[0] >= 3):
+      InputFile = input('\nEnter script: ')
+    else:
+      InputFile = raw_input('\nEnter script: ')
+    if (not InputFile):
+      print('\nScript file is required.')
+      print("\n" + Usage)
+      exit(1)
+
+  if (not isfile(InputFile)):
+    if (isfile(InputFile + '.sql')):
+      InputFile += '.sql'
+    else:
+      if (InputFile):
+        print('\nScript not found: %s\n' % InputFile)
+      else:
+        print('\nScript not found.\n')
+      print(Usage)
+      exit(1)
+  
+  hSql = open(InputFile, 'r')
+  try:
+    hSql = open(InputFile, 'r')
+    Sql = hSql.read() 
+  except:
+    print('\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+    print('Cannot open script for read: %s' % InputFile)
+    print('\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+    exit(1)
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

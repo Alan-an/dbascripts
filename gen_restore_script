@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+
+##################################################################################################
+#  Name:        gen_restore_script                                                               #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Generates an RMAN restore script based on # of channels, # instances,            #
+#               ZFS shares, etc.                                                                 #
+#                                                                                                #
+#  Usage: gen_restore_script [options]                                                           #
+#  options:                                                                                      #
+#    -h, --help      show this help message and exit                                             #
+#    -c CHAN_COUNT   Channel Count                                                               #
+#    -d DG_NAME      Disk Group Name                                                             #
+#    -e SVC_EXT      Service Ext.                                                                #
+#    -i INST_COUNT   Instance Count                                                              #
+#    -l SHAR_LABLE   Share Label                                                                 #
+#    -s SHAR_COUNT   Share Count                                                                 #
+#    -n SVC_NAME     Service Name                                                                #
+#    -r RMAN_SCRIPT  RMAN Script                                                                 #
+#    -v              print version info.                                                         #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/06/2014 1.00 Randy Johnson    Initial release.                                              #
+# 08/26/2014 1.01 Weidong Zhou     Add disk group name and add set newname clause back           #
+# 02/13/2014 1.02 Randy Johnson    Remove recovery from this script. Recovery can be generated   #
+#                                  with the gen_recover_script script.                           #
+# 11/02/2015 1.03 Randy Johnson    Changed SvgExt (-x) default value to ''.                      #
+#                                                                                                #
+# Todo's                                                                                         #
+#  - None at this time.                                                                          #
+#                                                                                                #
+# Wish List:                                                                                     #
+#  - None at this time.                                                                          #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime        import datetime
+from math            import floor, log, pow
+from sys             import exit, argv, stdout, path
+from optparse        import OptionParser
+from os              import walk, stat, chmod, unlink
+from os.path         import join as pathjoin, basename, dirname
+from re              import match, search, compile
+from string          import find, split, join
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == "__main__"):
+  Cmd           = basename(argv[0])
+  CmdDesc       = 'Generate Restore Script'
+  VersionDate   = 'Mon Nov  2 09:57:51 CST 2015'
+  Version       = '1.03'
+  Interactive   = stdout.isatty()
+  InstList      = []
+  Cluster       = "V2"
+  ConnectStr    = "sys/Lexus2014"
+  ArgParser     = OptionParser()
+  Now           = datetime.now()
+  ShBang        = "#!/bin/bash\n"
+
+  ArgParser.add_option("-c", dest="ChanCount",  default='2',                        type=str, help="Channel Count",       metavar='CHAN_COUNT')
+  ArgParser.add_option("-d", dest="DgName",     default='+DATA',                    type=str, help="Data Disk Group",     metavar='DATA_DISKGROUP')
+  ArgParser.add_option("-e", dest="SvcExt",     default='',                         type=str, help="Service Ext.",        metavar='SVC_EXT')
+  ArgParser.add_option("-i", dest="InstCount",  default='8',                        type=str, help="Instance Count",      metavar='INST_COUNT')
+  ArgParser.add_option("-l", dest="SharLabel",  default='SHARE',                    type=str, help="Share Label",         metavar='SHAR_LABLE')
+  ArgParser.add_option("-s", dest="SharCount",  default='8',                        type=str, help="Share Count",         metavar='SHAR_COUNT')
+  ArgParser.add_option("-n", dest="SvcName",    default='MYDB_BAK',                 type=str, help="Service Name",        metavar='SVC_NAME')
+  ArgParser.add_option("-r", dest="RmanScript", default='restore_database',         type=str, help="RMAN Script",         metavar='RMAN_SCRIPT')
+  ArgParser.add_option("-v", dest="Version",    default=False, action="store_true",           help="print version info.", metavar='VERSION')
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  if (Options.Version):
+    Banner = CmdDesc + ', Release ' + Version + ' Production, ' + VersionDate
+    print '\n', Banner
+    exit()
+
+  ChanCount  = Options.ChanCount
+  DgName     = Options.DgName
+  SharCount  = Options.SharCount
+  InstCount  = Options.InstCount
+  ShareLabel = Options.SharLabel
+  SvcName    = Options.SvcName
+  SvcExt     = Options.SvcExt
+  RmanScript = Options.RmanScript
+
+  try:
+    hRmanScript = open(RmanScript, "w")
+  except:
+    print 'Could not open restore script for write:', RmanScript
+    exit(1)
+
+  Header  = '\n# ===================================================================================================\n'
+  Header += '# %-38s Production - Release %-5s %32s\n' % (CmdDesc, Version, Now.strftime("%Y-%m-%d %H:%M"))
+  Header += '# ===================================================================================================\n'
+  Header += '# Number of Channels per share : %-4s\n'  % (ChanCount)
+  Header += '# Number of Mount Points       : %-4s\n'  % (SharCount)
+  Header += '# Number of Instances          : %-4s\n'  % (InstCount)
+  Header += '# Service Name prefix          : %-15s\n' % (SvcName)
+  Header += '# Service Name postfix         : %-15s\n' % (SvcExt)
+  Header += '# Script File Name             : %-50s\n' % (RmanScript)
+  Header += '# ===================================================================================================\n'
+
+  Header += 'if [ -f "env.sh" ]; then\n'
+  Header += '   . env.sh\n'
+  Header += 'else\n'
+  Header += '   echo env.sh file not found in current directory.\n'
+  Header += '   exit 1\n'
+  Header += 'fi\n\n'
+
+  RmanString  = "rman log=${MIG_LOG}/restore_database_$$.log<<EOF\n"
+  RmanString += "connect target /\n"
+  RmanString += "run {\n"
+  RmanString += "  sql 'alter system set \"_backup_disk_bufcnt\"  =      64 scope=memory\';\n"
+  RmanString += "  sql 'alter system set \"_backup_disk_bufsz\"   = 1048576 scope=memory';\n"
+  RmanString += "  sql 'alter system set \"_backup_file_bufcnt\"  =      64 scope=memory\';\n"
+  RmanString += "  sql 'alter system set \"_backup_file_bufsz\"   = 1048576 scope=memory';\n\n"
+
+  RmanString += "  set newname for database to '%s';\n" %(DgName)
+
+  ChanId = 1
+  for c in range(1,(int(ChanCount)+1)):
+    for ShrItr in range(1,(int(SharCount)+1)):
+      for InstItr in range(1,(int(InstCount)+1)):
+        RmanString += "  allocate channel %s%d_%s%d_%-4d DEVICE TYPE DISK CONNECT '%s@%s%d%s';\n" % (SvcName,InstItr,ShareLabel,ShrItr,ChanId,ConnectStr,SvcName,InstItr,SvcExt)
+        ChanId += 1
+      RmanString += "\n"
+
+  RmanString += "  # -----------------------------------------------------------------------------------------\n"
+  RmanString += "  # Uncomment and configure the restore command(s) below as needed for your restore.\n"
+  RmanString += "  # -----------------------------------------------------------------------------------------\n"
+  RmanString += "  ### restore database until scn 10862830369582;\n"
+  RmanString += "  ### restore database until sequence 285487 thread 3;\n"
+  RmanString += "  ### restore database until time \"TO_DATE('01-08-2014 23:20:11','MM-DD-YYYY HH24:MI:SS')\";\n\n"
+  RmanString += "}\n"
+  RmanString += "EOF\n\n"
+
+  RmanString = ShBang + Header + '\n' + RmanString
+  print RmanString
+
+  # Write the new script.
+  # ------------------------------------
+  if (not hRmanScript.closed):             # if the file is open...
+    hRmanScript.write(RmanString)
+    chmod(RmanScript, 0740)
+    hRmanScript.close()
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
+

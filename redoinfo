@@ -1,0 +1,171 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        redoinfo                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Reports redolog info from v$log, and v$logfile.                                  #
+#                                                                                                #
+#  Usage: redoinfo [options]                                                                     #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help    show this help message and exit                                               #
+#   --s            print SQL query.                                                              #
+#   --v            print version info.                                                           #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/31/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Report Redolog Info.'
+  Version        = '1.00'
+  VersionDate    = 'Mon Oct 19 15:46:41 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  Sid            = 0
+  InStr          = ''
+  ConnStr        = ''
+  InstList       = []
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  ArgParser.add_option('-o',  dest='OrderBy',                         default='',    type=str,  help="order by 1,2,3 ...")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,            help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,            help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  OrderBy   = Options.OrderBy
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column group#        format 999             heading 'Grp'\n"
+  Sql += "column thread#       format 99              heading 'Trd#'\n"
+  Sql += "column status        format a8              heading 'Status'\n"
+  Sql += "column archived      format a9              heading 'Archived?'\n"
+  Sql += "column first_change# format 999999999999999 heading 'First Change#'\n"
+  Sql += "column next_change#  format 999999999999999 heading 'Next Change#'\n"
+  Sql += "column first_time    format a19             heading 'First Time'\n"
+  Sql += "column next_time     format a19             heading 'Next Time'\n"
+  Sql += "column bytes         format 999,999,999,999 heading 'Bytes'\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         group#\n"
+  Sql += "       , thread#\n"
+  Sql += "       , bytes\n"
+  Sql += "       , status\n"
+  Sql += "       , archived\n"
+  Sql += "       , first_change#\n"
+  Sql += "       , to_char(first_time, 'yyyy-mm-dd hh24:mi:ss') first_time\n"
+  Sql += "       , next_change#\n"
+  Sql += "       , to_char(next_time, 'yyyy-mm-dd hh24:mi:ss') next_time\n"
+  Sql += "    FROM v$log\n"
+  if (OrderBy != ''):
+    Sql += "ORDER BY " +  OrderBy + ";\n"
+  else:
+    Sql += "ORDER BY group#\n"
+    Sql += "       , thread#;\n\n"
+
+  Sql += "column group#        format 999             heading 'Grp'\n"
+  Sql += "column member        format a73             heading 'Member'\n"
+  Sql += "column status        format a8              heading 'Status'\n"
+  Sql += "column archived      format a3              heading 'Arch'\n"
+  Sql += "column first_change# format 999999999999999 heading 'First Change#'\n"
+  Sql += "column next_change#  format 999999999999999 heading 'Next Change#'\n"
+  Sql += "column first_time    format a19             heading 'First Time'\n"
+  Sql += "column next_time     format a19             heading 'Next Time'\n"
+  Sql += "column type          format a12             heading 'Type'\n"
+  Sql += "column is_recovery_dest_file  format a18    heading 'Is Reco Dest File?'\n"
+  Sql += "column bytes         format 999,999,999,999 heading 'Bytes'\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         group#\n"
+  Sql += "       , status\n"
+  Sql += "       , type\n"
+  Sql += "       , member\n"
+  Sql += "       , IS_RECOVERY_DEST_FILE\n"
+  Sql += "    FROM v$logfile\n"
+  if (OrderBy != ''):
+    Sql += "ORDER BY " +  OrderBy + ";\n"
+  else:
+    Sql += "ORDER BY group#\n"
+    Sql += "       , member;"
+    
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

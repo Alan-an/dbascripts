@@ -1,0 +1,63 @@
+#!/bin/bash
+
+ps -ef | grep pmon | grep -v grep | grep -v perl | grep -i ASM | grep -v DBFS |\
+while read PMON; do
+   INST=`echo $PMON | awk {' print $8 '} | cut -f3 -d_`
+  echo "instance: $INST"
+
+  export ORACLE_SID=$INST
+  export ORAENV_ASK=NO
+  . oraenv
+
+  sqlplus -s /nolog <<-EOF
+  connect / as sysdba
+
+
+set lines                    400
+col state                    format a8       heading "State"
+col type                     format a8       heading "Type"
+col name                     format a15      heading "Name"
+col sector                   format 999990   heading "Sector"
+col block                    format 999990   heading "Block"
+col label                    format a25      heading "Label"
+col path                     format a40      heading "Path"
+col offline_disks            format 99999    heading "Offline|Disks"
+col redundancy               format a25      heading "Redundancy"
+col pct_used                 format 990      heading "PCT|Used"
+col pct_free                 format 990      heading "PCT|Free"
+col voting                   format a6       heading "Voting"
+col raw_gb                                   heading "Raw|Total GB"
+col usable_total_gb                          heading "Real|Total GB"
+col usable_used_gb                           heading "Real|Used GB"
+col usable_free_gb                           heading "Real|Free GB"
+col required_mirror_free_gb                  heading "Required|Mirror Free|GB"
+col usable_file_gb                           heading "Usable|File|GB"
+BREAK ON REPORT
+COMPUTE SUM OF raw_gb                  ON REPORT
+COMPUTE SUM OF usable_total_gb         ON REPORT
+COMPUTE SUM OF usable_used_gb          ON REPORT
+COMPUTE SUM OF usable_free_gb          ON REPORT
+COMPUTE SUM OF required_mirror_free_gb ON REPORT
+COMPUTE SUM OF usable_file_gb          ON REPORT
+select state,
+       type,
+       sector_size                                                                                                                             sector,
+       block_size                                                                                                                              block,
+       allocation_unit_size                                                                                                                    au,
+       round(total_mb/1024,2)                                                                                                                  raw_gb,
+       round((DECODE(TYPE, 'HIGH', 0.3333 * total_mb,                'NORMAL', .5 * total_mb, total_mb))/1024,2)                               usable_total_gb,
+       round((DECODE(TYPE, 'HIGH', 0.3333 * (total_mb - free_mb),    'NORMAL', .5 * (total_mb - free_mb), (total_mb - free_mb)))/1024,2)       usable_used_gb,
+       round((DECODE(TYPE, 'HIGH', 0.3333 * free_mb,                 'NORMAL', .5 * free_mb, free_mb))/1024,2)                                 usable_free_gb,
+       round((DECODE(TYPE, 'HIGH', 0.3333 * required_mirror_free_mb, 'NORMAL', .5 * required_mirror_free_mb, required_mirror_free_mb))/1024,2) required_mirror_free_gb,
+       round(usable_file_mb/1024,2)                                                                                                            usable_file_gb,
+       round((total_mb - free_mb)/total_mb,2)*100                                                                                              "PCT_USED",
+       round(free_mb/total_mb,2)*100                                                                                                           "PCT_FREE",
+       offline_disks,
+       voting_files voting,
+       name
+  from v\$asm_diskgroup
+ where total_mb != 0
+ order by 1;
+EOF
+
+done

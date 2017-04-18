@@ -1,0 +1,194 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        parmhist                                                                         #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Report history of parameter changes from AWR.                                    #
+#                                                                                                #
+#  Usage: parmhist [options]                                                                     #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help    show this help message and exit                                               #
+#    -i INSTANCES  filter on instance number. Can be a list (1,2,3,...)                          #
+#    -c            include calculated (__) parms.                                                #
+#    -n NAME       where name like ...                                                           #
+#    -s            print SQL query.                                                              #
+#    -v            print version info.                                                           #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 05/29/2014 1.00 Randy Johnson    Initial write.                                                #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 09/04/2015 2.10 Randy Johnson    Bug fixes related to -g and -i options.                       #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from subprocess   import Popen
+from subprocess   import PIPE
+from subprocess   import STDOUT
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Parameter Change History'
+  Version        = '2.10'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Name           = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser = OptionParser()
+
+  ArgParser.add_option('-c',  dest='Calc',       action='store_true', default=False,            help="include calculated (__) parms.")
+  ArgParser.add_option('-g',  dest='Global',     action='store_true', default=False,            help="search gv$... (default is v$...)")
+  ArgParser.add_option('-i',  dest='Instances',                       default='',     type=str, help="where inst_id in 1,2,3,...")
+  ArgParser.add_option('-n',  dest='Name',                            default='',     type=str, help="where name like ...")
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,            help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,            help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  Calc      = Options.Calc
+  Global    = Options.Global
+  Instances = Options.Instances
+  Name      = Options.Name
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if(Instances != ''):
+    Global = True
+    junk = Instances.split(',')
+    try:
+      if (version_info[0] >= 3):
+        junk = list(map(int, junk))
+      else:
+        junk = map(int, junk)
+    except:
+      print("Instance list must be in integer form, eg. -i 1,2,3,4")
+      exit(1)
+
+  Sql += "break on instance skip 3\n"
+  Sql += "\n"
+  if (Global):
+    Sql  = "column inst           format a4  head 'Inst'\n"
+  Sql += "column snap_id        format a10 head 'Snap ID'\n"
+  Sql += "column time           format a15 head 'Time'\n"
+  Sql += "column parameter_name format a51 head 'Parameter'\n" 
+  Sql += "column old_value      format a50 head 'Old Value' wrap\n"
+  Sql += "column new_value      format a50 head 'New Value' wrap\n"
+  Sql += "\n" 
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         TO_CHAR(instance_number) inst\n"
+    Sql += "       , TO_CHAR(snap_id) snap_id\n"
+  else:
+    Sql += "         TO_CHAR(snap_id) snap_id\n"
+  Sql += "       , time\n"
+  Sql += "       , parameter_name\n"
+  Sql += "       , old_value\n"
+  Sql += "       , new_value\n"
+  Sql += "    FROM (SELECT a.snap_id\n"
+  Sql += "               , TO_CHAR(end_interval_time,'DD-MON-YY HH24:MI') time\n"
+  if (Global):
+    Sql += "               , a.instance_number\n"
+  Sql += "               , parameter_name\n"
+  Sql += "               , value new_value\n"
+  Sql += "               , LAG(parameter_name,1) OVER (partition BY parameter_name, a.instance_number order by a.snap_id) old_pname\n"
+  Sql += "               , LAG(value,1) OVER (partition BY parameter_name, a.instance_number order by a.snap_id) old_value\n"
+  Sql += "               , DECODE(SUBSTR(parameter_name,1,2),'__',2,1) calc_flag\n"
+  Sql += "            FROM dba_hist_parameter a\n"
+  Sql += "               , dba_Hist_snapshot b \n"
+  if (Global):
+    Sql += "               , gv$instance v\n"
+  else:
+    Sql += "               , v$instance v\n"
+  Sql += "           WHERE a.snap_id = b.snap_id\n"
+  if(Global):
+    Sql += "             AND a.instance_number = b.instance_number\n"
+    Sql += "             AND a.instance_number = v.instance_number\n"    
+  if (Instances != ''):
+    Sql += "             AND a.instance_number IN (" + Instances + ")\n"
+  if (Name != ''):
+    Sql += "             AND UPPER(parameter_name) LIKE '%" + Name.upper() + "%'\n"
+  Sql += "         )\n"
+  Sql += "   WHERE new_value != old_value\n"
+  if (Calc):
+    Sql += "     AND calc_flag NOT IN (3,2)\n"
+  if (Global):
+    Sql += "ORDER BY inst\n"
+    Sql += "       , snap_id;"
+  else:
+    Sql += "ORDER BY snap_id;"
+      
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,162 @@
+#!/bin/env python
+
+##################################################################################################
+# Name:        sqlprofiles                                                                       #
+# Author:      Randy Johnson                                                                     #
+# Description: Finds a SQL Profile being used by a particular sql statement from v$sql.          #
+#              Search by sql_id, address, sql_text, profile_name, parsing username.              #
+#                                                                                                #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 04/18/2012 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Find Sql Profiles'
+  Version        = '1.00'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option("-a",  dest="Address",                       default='',    type=str, help="address of sql.")
+  ArgParser.add_option('-g',  dest='Global',    action='store_true', default=False,          help="search gv$sql (default is v$sql)")
+  ArgParser.add_option('-i',  dest='SqlId',                         default='',    type=str, help="value for sql_id.")
+  ArgParser.add_option("-n",  dest="Name",                          default='',    type=str, help="name of sql profile.")
+  ArgParser.add_option('-r',  dest='Rows',                          default=0,     type=int, help="limit output to nnn rows (default 0=off).")
+  ArgParser.add_option("-t",  dest="SqlText",                       default='',    type=str, help="value for sql_text.")
+  ArgParser.add_option("-u",  dest="Username",                      default='',    type=str, help="parsing user.")
+  ArgParser.add_option('--s', dest='Show',     action='store_true', default=False,           help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',  action='store_true', default=False,           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Global   = Options.Global
+  Address  = Options.Address
+  SqlId    = Options.SqlId
+  Name     = Options.Name
+  Rows     = str(Options.Rows)
+  Show     = Options.Show
+  SqlText  = Options.SqlText
+  Username = Options.Username
+  ShowVer  = Options.ShowVer
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (Global):
+    Sql += "column inst              format 999                 heading 'Inst'\n"
+  Sql += "column address           format a16                 heading 'Address'\n"
+  Sql += "column parsing_user      format a30                 heading 'Parsing User'\n"
+  Sql += "column sql_id            format a13                 heading 'SQL ID'\n"
+  Sql += "column child_number      format 99999               heading 'Child'\n"
+  Sql += "column execs             format 999,999,999,999,999 heading 'Executions'\n"
+  Sql += "column avg_etime         format 9,999,999.99        heading 'Avg Ela Time'\n"
+  Sql += "column sql_profile       format a30                 heading 'SQL Profile'\n"
+  Sql += "column sql_text          format a41                 heading 'SQL Text'\n"
+  Sql += "\n"
+  Sql += "   SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "          inst_id inst\n"
+    Sql += "        , address\n"
+  else:
+    Sql += "          address\n"
+  Sql += "        , username parsing_user\n"
+  Sql += "        , sql_id\n"
+  Sql += "        , child_number\n"
+  Sql += "        , executions execs\n"
+  Sql += "        , (elapsed_time/1000000)/DECODE(NVL(executions,0),0,1,executions) avg_etime\n"
+  Sql += "        , sql_profile\n"                                                                
+  Sql += "        , sql_text\n"
+  if (Global):
+    Sql += "     FROM gv$sql s\n"
+  else:
+    Sql += "     FROM v$sql s\n"
+  Sql += "        , dba_users u\n"
+  Sql += "    WHERE u.user_id = s.parsing_user_id\n"
+  Sql += "      AND sql_text  NOT LIKE '%" + SqlHeader + "%'\n"
+  if (SqlId != ''):
+    Sql += "      AND sql_id LIKE '%" + SqlId + "%'\n"
+  if (Address != ''):
+    Sql += "      AND address LIKE '%" + Address.upper() + "%'\n"
+  if (Username != ''):
+    Sql += "      AND upper(u.username) LIKE '%" + Username.upper() + "%'\n"
+  if (SqlText != ''):
+    Sql += "      AND UPPER(sql_text) LIKE '%" + SqlText.upper() + "%'\n"
+  if (Name != ''):
+    Sql += "      AND sql_profile LIKE '%" + Name + "%'\n"
+  else:
+    Sql += "    AND sql_profile IS NOT NULL;"
+  if (Rows != '0'):
+    Sql += "      AND rownum <= " + Rows + "\n"
+  if (Global):
+    Sql += " ORDER BY inst_id\n"
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

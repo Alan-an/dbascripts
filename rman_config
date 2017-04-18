@@ -1,0 +1,115 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        rman_config                                                                      #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Runs RMAN> show all and reports the results.                                     #
+#                                                                                                #
+#  Usage: rman_config [options]                                                                  #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    --s         print rman commands.                                                            #
+#    --v         print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 11/08/2015 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import PrintError
+from Oracle       import RunRman
+from Oracle       import SetOracleEnv
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'RMAN Config. Report'
+  Version        = '1.00'
+  VersionDate    = 'Sun Nov  8 13:23:08 CST 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Rcv            = ''
+  ErrChk         = True
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Stdout         = ''
+  Rcv = "show all;"
+
+  print('')
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('--s', dest='Show',         action='store_true', default=False, help="print rman commands.")
+  ArgParser.add_option('--v', dest='ShowVer',      action='store_true', default=False, help="print version info.")
+  
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Show    = Options.Show
+  ShowVer = Options.ShowVer
+  
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+    
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Rcv)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Anything left on the command line is assumed to be a connect string...
+  if (len(args) > 0 and Show == False):
+    ConnStr = ' '.join(args)
+
+  # Execute the report
+  if (ConnStr != ''):  
+    (rc, Stdout, ErrorList) = RunRman(Rcv, ErrChk, ConnStr)
+  else:
+    (rc, Stdout, ErrorList) = RunRman(Rcv, ErrChk)  
+  
+  if (rc):
+    PrintError(Rcv, Stdout, ErrorList)
+    exit(rc)
+  else: 
+    # Parse and print the report
+    Stdout = Stdout.strip()  
+    if (Stdout != ''):
+      print("RMAN Configuration")
+      print("-------------------------------------------------------------------------------------------------------------")
+      for line in Stdout.split('\n'):
+        if (line.find('CONFIGURE ',0, 10) >= 0):
+          print(line)    
+    exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

@@ -1,0 +1,149 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        controlfile_backups                                                              #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Report all automatic control files within all available (and expired) backup     #
+#               sets.                                                                            #
+#                                                                                                #
+#  usage: controlfile_backups [options]                                                          #
+#                                                                                                #
+#  options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -s          print SQL query.                                                                #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/02/2014 1.00 Randy Johnson    Initial write.                                                #
+# 11/08/2015 2.00 Randy Johnson    Updated for Python 3.x, added handling for connect string.    #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+from Oracle       import PrintError
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Controlfile Backups'
+  Version        = '2.00'
+  VersionDate    = 'Sun Nov  8 16:11:14 CST 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # Check/set the Oracle environment
+  if ('ORACLE_SID' in list(environ.keys())):
+    (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+  else:
+    if (version_info[0] >= 3):
+      Sid = input('\nEnter the ORACLE_SID of the database you want to search: ')
+    else:
+      Sid = raw_input('\nEnter the ORACLE_SID of the database you want to search: ')
+    (OracleSid, OracleHome) = SetOracleEnv(Sid)
+
+  ArgParser.add_option("-l",  dest="Lines",   default='0',                        type=str, help="limit output to nnn rows (default 0=off)", metavar='LINES')
+  ArgParser.add_option("--s", dest="Show",    default=False, action="store_true",           help="print SQL query.")
+  ArgParser.add_option("--v", dest="ShowVer", default=False, action="store_true",           help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  Lines     = Options.Lines
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql += "column bs_key                     format a6              heading 'BS Key'\n"
+  Sql += "column piece                      format a9              heading 'Piece#  '\n"
+  Sql += "column copy                       format a5              heading 'Copy#'\n"
+  Sql += "column bp_key                     format a7              heading 'BS Key'\n"
+  Sql += "column controlfile_included       format a7              heading 'CF Incl'\n"
+  Sql += "column completion_time            format a19             heading 'Completion Time'\n"
+  Sql += "column status                     format a10             heading 'Status    '\n"
+  Sql += "column handle                     format a80             heading 'Filename'\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  Sql += "         TO_CHAR(bs.completion_time, 'YYYY-MM-DD HH24:MI:SS') completion_time\n"
+  Sql += "       , TO_CHAR(bs.recid)  bs_key\n"
+  Sql += "       , TO_CHAR(bp.piece#) piece\n"
+  Sql += "       , TO_CHAR(bp.copy#)  copy\n"
+  Sql += "       , TO_CHAR(bp.recid)  bp_key\n"
+  Sql += "       , INITCAP(DECODE(bs.controlfile_included,'NO', '-', bs.controlfile_included)) controlfile_included\n"
+  Sql += "       , DECODE(status, 'A', 'Available', 'D', 'Deleted', 'X', 'Expired') status\n"
+  Sql += "       , handle handle\n"
+  Sql += "    FROM v$backup_set    bs\n"
+  Sql += "       , v$backup_piece  bp\n"
+  Sql += "   WHERE bs.set_stamp = bp.set_stamp\n"
+  Sql += "     AND bs.set_count = bp.set_count\n"
+  Sql += "     AND bp.status IN ('A', 'X')\n"
+  Sql += "     AND bs.controlfile_included != 'NO'\n"
+  Sql += "ORDER BY bs.completion_time DESC;"
+  
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the Report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

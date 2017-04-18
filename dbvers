@@ -1,0 +1,177 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        dbvers                                                                           #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints database version and patch information from produt_component_version, and #
+#               dba_registry_history.                                                            #
+#                                                                                                #
+#  Usage: dbvers [options]                                                                       #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -s          print SQL query.                                                                #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 07/08/2014 1.00 Randy Johnson    Initial write.                                                #
+# 07/10/2014 1.10 Randy Johnson    Added xmltransform(dbms_qopatch.get_opatch_list(), -          #
+#                                   dbms_qopatch.GET_OPATCH_XSLT()) for 12c databases.           #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 08/07/2015 2.10 Randy Johnson    Minor mods for consistency + added tns connect option.        #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Db Version'
+  Version        = '2.10'
+  VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+
+
+  ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  if (Options.ShowVer):
+    Banner = CmdDesc + ', Release ' + Version + ' Production, ' + VersionDate
+    print('\n%s' % Banner)
+    exit()
+
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+    
+  Sql += "column product        format a45            heading 'Product'\n"
+  Sql += "column version        format a15            heading 'Version'\n"
+  Sql += "column status         format a25            heading 'Status'\n"
+  Sql += "column action         format a20            heading 'Action'\n"
+  Sql += "column action_time    format a30            heading 'Action Time'\n"
+  Sql += "column namespace      format a10            heading 'Namespace'\n"
+  Sql += "column version        format a20            heading 'Version'\n"
+  Sql += "column id             format 9999999999     heading 'ID'\n"
+  Sql += "column bundle_series  format a15            heading 'Bundle Series'\n"
+  Sql += "column comments       format a50 wrap       heading 'Comments'\n"
+  Sql += "\n"
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       product\n"
+  Sql += "     , version\n"
+  Sql += "     , status\n"
+  Sql += "  FROM product_component_version\n"
+  Sql += " ORDER BY product;\n"
+  Sql +=" \n"
+  
+  Sql += "SELECT " + SqlHeader + "\n"
+  Sql += "       *\n"
+  Sql += "  FROM dba_registry_history\n"
+  Sql += " ORDER BY action_time;\n"
+  
+  if (Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+  else:
+    # Check/setup the Oracle environment
+    if (not('ORACLE_SID' in list(environ.keys()))):
+      print('ORACLE_SID is required.')
+      exit(1)
+    else:
+      # Set the ORACLE_HOME just in case it isn't set already.
+      if (not('ORACLE_HOME' in list(environ.keys()))):
+        (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+  
+    # Parse the connect string if any, prompt for username, password if needed.
+    if (len(args) > 0 and Show == False):
+      InStr = args[0]
+      ConnStr = ParseConnectString(InStr)
+
+    # Execute the report
+    if (ConnStr != ''):
+      (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+    else:
+      (Stdout) = RunSqlplus(Sql, ErrChk)
+
+    # Print the report
+    if (Stdout != ''):
+      print('\n%s' % Stdout)
+
+  Sql  = "set heading off\n"
+  Sql += "set long    2000000\n"
+  Sql += "select xmltransform(dbms_qopatch.get_opatch_list(), dbms_qopatch.GET_OPATCH_XSLT()) opatch\n"
+  Sql += "  from dual;"
+
+  if (Show):
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+  else:
+    # Execute the report
+    ErrChk = True
+    if (ConnStr != ''):
+      (rc, Stdout, ErrList) = RunSqlplus(Sql, ErrChk, ConnStr)
+    else:
+      (rc, Stdout, ErrList) = RunSqlplus(Sql, ErrChk)
+
+    # Print the report
+    print('\nOpatch Detail')
+    print('-------------------------------------------------------------------------------------------------')
+    if (rc != 0):
+      print('<no opatch detail available>')
+    else:
+      if (Stdout != ''):
+        print(Stdout)
+        PatchInv = Stdout.split('\n\n')[1:]
+        for Patch in PatchInv:
+          for PatchLine in Patch.split('\n'):
+            if (PatchLine == ''):
+              print('---')
+            else:
+              PatchLine = PatchLine.strip()
+              pos = PatchLine.find(':')
+              if (pos > 0):
+                PatchLabel = PatchLine[0:pos]
+                PatchLabel = ' '.join(PatchLabel.split())
+                PatchValue = ' '.join(PatchLine[pos+1:].split())
+              print('%-30s : %-50s' % (PatchLabel, PatchValue))
+      
+  Sql = Sql.strip()
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------

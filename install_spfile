@@ -1,0 +1,279 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:         install_spfile                                                                    #
+# Author:       Randy Johnson                                                                     #
+# Description:  Starts the database on the local node using the pfile (from the -p option) then   #
+#               creates an spfile in ASM from the pfile. Checks the database state before         #
+#               starting the operation and after each startup/shutdown command is executed.       #
+# Dependencies: $ASM_HOME/bin/olsnodes                                                            #
+#               $ORACLE_HOME/bin/sqlplus                                                          #
+#                                                                                                 #
+# Usage: install_spfile [options]                                                                 #
+#                                                                                                 #
+# Options:                                                                                        #
+#   -h, --help         show this help message and exit                                            #
+#   -d DB_NAME         database name.                                                             #
+#   -g DISKGROUP_NAME  diskgroup name, (default = +DATA)                                          #
+#   -p PFILE           init.ora file name.                                                        #
+#   -u DB_UNIQUE_NAME  database unique name, (default = db_name)                                  #
+#   --v                print version info.                                                        #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who          on the local node.    Change Description                           #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 02/16/2014 1.00 Randy Johnson    Initial release.                                               #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                      #
+# 09/19/2015 3.00 Randy Johnson    Updated fairly heavily in order to improve flexibility. Added  #
+#                                  -g (diskgroup) option, -u (db_unique_name) option, eliminated  #
+#                                  the -e (ext) option. Removed GetClustername(), GetClusterInfo()#
+#                                  and switched GetNodes() from a local definition to the         #
+#                                  Oracle.py module. Cleaned up a lot of print statements that    #
+#                                  were still of the < Python3.4 style.                           #
+# 10/09/2015 3.01 Randy Johnson    Removed Pid, getpgid()                                         #
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from os.path      import basename
+from os.path      import join as pathjoin
+from optparse     import OptionParser
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from socket       import gethostname
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from subprocess   import Popen
+from subprocess   import PIPE
+from subprocess   import STDOUT
+from Oracle       import GetNodes
+from Oracle       import RunSqlplus
+from Oracle       import PrintError
+from Oracle       import SetOracleEnv
+from Oracle       import GetDbState
+from Oracle       import PythonStackTrace
+from Oracle       import IsExecutable
+
+
+# --------------------------------------
+# ---- Function Definitions ------------
+# --------------------------------------
+
+# Def : InstallSpfile()
+# Desc: Creates an spfile in ASM from an init.ora file and starts the
+#       database to the mount state.
+# Args: Pfile=init.ora
+# Retn: <none>
+#---------------------------------------------------------------------------
+def InstallSpfile(Pfile):
+
+  # Ensure the database is down...
+  # ---------------------------------
+  DbState = GetDbState();
+  if (DbState != 'STOPPED'):
+    print('The database must be shutdown before proceeding.')
+    print('Current state is: %s' % DbState)
+    exit(1)
+
+  # Start the database using the Pfile
+  # ------------------------------------
+  Sql = "startup nomount pfile='" + Pfile + "'"
+  print(Sql)
+  ErrChk = True
+  rc, Stdout, ErrorList = RunSqlplus(Sql, ErrChk)
+
+  if (rc != 0):
+    PrintError(Sql, Stdout, ErrorList)
+    exit(rc)
+
+  # Ensure the database is started...
+  # ----------------------------------
+  DbState = GetDbState();
+  if (DbState != 'STARTED'):
+    print('The database must be in STARTED state before proceeding.')
+    print('Current state is: %s' % DbState)
+    exit(1)
+
+  # Create an spfile in ASM from the pfile.
+  # ------------------------------------------
+  Sql="create spfile='" +  Spfile + "' from pfile='" + Pfile + "';"
+  print(Sql)
+  ErrChk = True
+  rc, Stdout, ErrorList = RunSqlplus(Sql, ErrChk)
+  if (rc != 0):
+    PrintError(Sql, Stdout, ErrorList)
+    exit(rc)
+
+  # Shutdown the database for restart with the temporary init.ora file...
+  # -----------------------------------------------------------------------
+  Sql = "shutdown immediate"
+  print(Sql)
+  ErrChk = False
+  Stdout = RunSqlplus(Sql, ErrChk)
+
+  # Create init[ORACLE_SID].ora file
+  # ----------------------------------
+  print('Create pfile on local node:')
+  print('  Filename: %s' % Initfile)
+  print("  Contents: spfile='%s'" % Spfile)
+  try:
+    h_Initfile = open(Initfile, 'w')
+    h_Initfile.write("spfile='" + Spfile + "'\n")
+    h_Initfile.close()
+  except:
+    PythonStackTrace()
+    print('Error writing to ifile: %s' % Initfile)
+
+  # Startup the database to mount state using the newly restored spfile.
+  # ----------------------------------------------------------------------
+  Sql = "startup nomount"
+  print(Sql)
+  ErrChk = False
+  Stdout = RunSqlplus(Sql, ErrChk)
+  print('Current state is: %s on the local node.' % DbState)
+# End RestoreSpfile()
+
+# --------------------------------------
+# ---- End Function Definitions --------
+# --------------------------------------
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'Install Spfile'
+  Version        = '3.01'
+  VersionDate    = 'Fri Oct 9 13:34:56 CDT 2015'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Colsep         = '!~!'
+  Oratab         = '/etc/oratab'
+  Hostname       = gethostname().split('.')[0]
+  EnvScript      = 'env.sh'
+  Now            = datetime.now()
+
+  # For handling termination in stdout pipe.
+  #  ex. when you run: oerrdump | head
+  #--------------------------------------------
+  signal(SIGPIPE, SIG_DFL)
+
+  # Process command line options
+  # ----------------------------------
+  #Usage = 'parms [options] [parm_filter]'
+  ArgParser = OptionParser()
+
+  ArgParser.add_option("-d",                       dest="Db_Name",        default='',      type=str, help="database name.")
+  ArgParser.add_option("-g",                       dest="Diskgroup_Name", default='+DATA', type=str, help="diskgroup name, (default = +DATA)")
+  ArgParser.add_option("-p",                       dest="Pfile",          default='',      type=str, help="init.ora file name.")
+  ArgParser.add_option("-u",                       dest="Db_Unique_Name", default='',      type=str, help="database unique name, (default = db_name)")
+  ArgParser.add_option("--v", action="store_true", dest="ShowVer",        default=False,             help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  DbName        = Options.Db_Name
+  DbUniqueName  = Options.Db_Unique_Name
+  DgName        = Options.Diskgroup_Name
+  Pfile         = Options.Pfile
+  ShowVer       = Options.ShowVer
+
+  if (argc > 0):
+    Filter = args[argc-1].lower()
+
+  if (ShowVer):
+    print('\n' + Banner)
+    exit()
+
+  if (DbUniqueName == ''):
+    DbUniqueName = DbName
+
+  if (Pfile == ''):
+    print('\nPfile is required, ex:\n\n    %s -d MYDB -p /tmp/init.ora' % Cmd)
+    exit(1)
+
+  if (DbName == ''):
+    print('\nDatabase name is required, ex:\n\n    %s -d MYDB -p /tmp/init.ora' % Cmd)
+    exit(1)
+
+  print('\n============================================================================================================================')
+  print('%s: Release %s Production, %28s %54s' % (CmdDesc, Version, VersionDate, Now.strftime("%Y-%m-%d %H:%M")))
+  print('============================================================================================================================')
+  print('Gathering information about your configuration...')
+
+  # Verify init.ora before proceeding.
+  # ---------------------------------------
+  try:
+    junk = open(Pfile, 'r')
+  except:
+    PythonStackTrace()
+    print('Cannot open init.ora file for read: %s' % Pfile)
+    exit(1)
+
+  # Get the names of the compute nodes in this cluster.
+  # ----------------------------------------------------
+  NodeDict = GetNodes()
+  NodeCount = len(NodeDict.keys())
+  ThisNodeId = NodeDict[Hostname]
+
+  # Set the database environment.
+  # ------------------------------
+  OraInst, OraHome = SetOracleEnv(DbName + ThisNodeId)
+  OraBin = pathjoin(OraHome, 'bin')
+  Sqlplus = pathjoin(OraBin, 'sqlplus')
+  if (not IsExecutable(Sqlplus)):
+    print('The following command cannot be executed by this user account: %s' % Sqlplus)
+    exit(1)
+
+  Spfile = DgName.upper() + '/' + DbUniqueName.upper() + '/spfile' + DbName.upper() + '.ora'
+  Initfile = pathjoin(OraHome,'dbs','init' + DbName + ThisNodeId + '.ora')
+
+  print('\nThis script performs the following tasks:')
+  print('  1) Starts the database instance on the local node (startup nomount pfile=...)')
+  print('     using the pfile (-p option).')
+  print('  2) Converts the pfile to an spfile and installs it into ASM. (create spfile from pfile ...)')
+  print('  3) Creates a new pfile in the $ORACLE_HOME/dbs directory pointing')
+  print('     to the new spfile in ASM.')
+  print('  4) Stops the database instance.')
+  print('  5) Restarts the database instance using the new pfile in the')
+  print('     $ORACLE_HOME/dbs directory to validate the new files.')
+  print('')
+  print('Requirements:')
+  print('  - The database must be down on the local node, (eg. not STARTED, MOUNTED, or OPEN).')
+  print('  - The user account must be able to stop/start the database (typically a member of dba OS group).')
+  print('  - The user account must be able to execute sqlplus and olsnodes commands.')
+  print('')
+  print('The following settings will be used for this run:')
+  print('  Diskgroup      : %s' % DgName)
+  print('  Db Name        : %s' % DbName)
+  print('  Db Unique Name : %s' % DbUniqueName)
+  print('  Database SID   : %s' % OraInst)
+  print('  Database Home  : %s' % OraHome)
+  print('  Node ID        : %s' % ThisNodeId)
+  print('  Node Count     : %s' % str(NodeCount))
+  print('  Node List      : %s' % ', '.join(list(NodeDict.keys())))
+  print('  Pfile          : %s' % Pfile)
+  print('  Spfile         : %s' % Spfile)
+
+  if (version_info[0] >= 3):
+    Response = input("\nContinue? y/N ")
+  else:
+    Response = raw_input("\nContinue? y/N ")
+
+  if (Response.upper() != 'Y'):
+    print('\nExiting. No changes made...')
+    exit(0)
+  else:
+    print('\nConfirmed. Proceeding with changes...\n')
+
+  # Create a spfile in ASM from the Pfile
+  # --------------------------------------
+  OraInst, OraHome = SetOracleEnv(DbName + ThisNodeId)
+  InstallSpfile(Pfile)
+
+  exit(0)
