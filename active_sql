@@ -66,7 +66,7 @@ if (__name__ == '__main__'):
   Password       = ''
   ConnStr        = ''
   InstList       = []
-  
+
 
   # For handling termination in stdout pipe; ex: when you run: oerrdump | head
   signal(SIGPIPE, SIG_DFL)
@@ -75,7 +75,7 @@ if (__name__ == '__main__'):
   ArgParser.add_option('-i',  dest='Instances',                       default='',    type=str,       help="where inst_id in 1,2,3,...")
   ArgParser.add_option('--s', dest='Show',       action='store_true', default=False,                 help="print SQL query.")
   ArgParser.add_option('--v', dest='ShowVer',    action='store_true', default=False,                 help="print version info.")
-  
+
   # Parse command line arguments
   Options, args = ArgParser.parse_args()
 
@@ -83,15 +83,15 @@ if (__name__ == '__main__'):
   Instances = Options.Instances
   Show      = Options.Show
   ShowVer   = Options.ShowVer
-  
+
   if (ShowVer):
     print('\n%s' % Banner)
     exit()
-  
+
   # Assume gv$sysmetric if an instance list is specified.
   if (not Global and Instances != ''):
     Global = True
-  
+
   if(Instances != ''):
     InstList = Instances.split(',')
     try:
@@ -104,7 +104,7 @@ if (__name__ == '__main__'):
     except:
       print("Instance list must be in integer form, eg. -i 1,2,3,4")
       exit(1)
-  
+
   if (Global):
     Sql += "column inst            format a4                          heading 'Inst'\n"
   Sql += "column sid             format a5                          heading 'SID  '\n"
@@ -118,7 +118,7 @@ if (__name__ == '__main__'):
   Sql += "column avg_etime       format 999,999.99                  heading 'Avg. E-Time'\n"
   Sql += "column sql_text        format a60 trunc                   heading 'SQL Text'\n"
   Sql += "break on sql_text\n"
-  Sql += "\n"  
+  Sql += "\n"
   Sql += "  SELECT " + SqlHeader + "\n"
   if (Global):
     Sql += "         vs.inst_id inst\n"
@@ -153,9 +153,9 @@ if (__name__ == '__main__'):
     Sql += "       , avg_etime desc;\n"
   else:
     Sql += "ORDER BY avg_etime desc;"
-  
+
   Sql = Sql.strip()
-  
+
   if(Show):
     print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
     print(Sql)
