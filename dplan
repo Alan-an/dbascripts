@@ -52,7 +52,7 @@ if (__name__ == '__main__'):
   CmdDesc        = 'DBMS Xplan'
   Version        = '2.10'
   VersionDate    = 'Tue Sep 15 21:02:11 CDT 2015'
-  DevState       = 'Development/Test/Production'
+  DevState       = 'Development'
   Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
   Sql            = ''
   SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
