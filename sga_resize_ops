@@ -1,0 +1,152 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        sga_resize_ops                                                                   #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Reports SGA resizing operations.                                                 #
+#                                                                                                #
+#  Usage: sga_resize_ops [options]                                                               #
+#                                                                                                #
+#  Options:                                                                                      #
+#     -h, --help  show this help message and exit                                                #
+#     -g          report gv$... (default is v$...)                                               #
+#     --s         print SQL query.                                                               #
+#     --v         print version info.                                                            #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 04/24/2017 1.00 Randy Johnson    Initial write.                                                #
+##################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'SGA Resizing Operations'
+  Version        = '1.00'
+  VersionDate    = 'Mon Apr 24 14:43:36 CDT 2017'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  Sid            = 0
+  InStr          = ''
+  ConnStr        = ''
+  InstList       = []
+
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  ArgParser.add_option('-g',  dest='Global',  action='store_true', default=False, help="report gv$... (default is v$...)")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False, help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False, help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Global    = Options.Global
+  Show      = Options.Show
+  ShowVer   = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  if (Global):
+    Sql += "column inst_id       format a4              heading 'Inst'\n"
+  Sql += "column start_time    format a20               heading 'Start Time'\n"
+  Sql += "column component     format a30               heading 'Component'\n"
+  Sql += "column oper_type     format a15               heading 'Operation Type'\n"
+  Sql += "column parameter     format a40               heading 'Parameter'\n"
+  Sql += "column initial_size  format 999,999,999,999   heading 'Initial Bytes'\n"
+  Sql += "column target_size   format 999,999,999,999   heading 'Target Bytes'\n"
+  Sql += "column final_size    format 999,999,999,999   heading 'Final Bytes'\n"
+  Sql += "\n"
+  Sql += "  SELECT " + SqlHeader + "\n"
+  if (Global):
+    Sql += "         TO_CHAR(inst_id) inst_id\n"
+    Sql += "       , TO_CHAR(start_time, 'YYYY-MM-DD HH24:MI:SS') start_time\n"
+  else:
+    Sql += "         TO_CHAR(start_time, 'YYYY-MM-DD HH24:MI:SS') start_time\n"
+  Sql += "       , component\n"
+  Sql += "       , initcap(oper_type) oper_type\n"
+  Sql += "       , parameter\n"
+  Sql += "       , initial_size\n"
+  Sql += "       , target_size\n"
+  Sql += "       , final_size\n"
+  if (Global):
+    Sql += "    FROM gv$sga_resize_ops\n"
+    Sql += "ORDER BY inst_id\n"
+    Sql += "       , start_time;"
+  else:
+    Sql += "    FROM v$sga_resize_ops\n"
+    Sql += "ORDER BY start_time;"
+    
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  # Print the report
+  if (Stdout != ''):
+    print('\n%s' % Stdout)
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
