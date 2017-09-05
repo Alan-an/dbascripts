@@ -1,0 +1,207 @@
+#!/bin/env python
+
+###################################################################################################
+# Name:         oratab                                                                            #
+# Author:       Randy Johnson                                                                     #
+# Description:  Displays the contents of the oratab file in report format. Commented lines are    #
+#               omitted.                                                                          #
+#                                                                                                 #
+# Usage: oratab [options]                                                                         #
+#                                                                                                 #
+# options:                                                                                        #
+#   -h, --help  show this help message and exit                                                   #
+#   -v          print version info.                                                               #
+#                                                                                                 #
+# History:                                                                                        #
+#                                                                                                 #
+# Date       Ver. Who              Change Description                                             #
+# ---------- ---- ---------------- -------------------------------------------------------------- #
+# 04/17/2017 1.00 Randy Johnson    Initial release.                                               #
+# 09/01/2017 1.01 Randy Johnson    Add program description to -h.                                 #
+# 09/05/2017 1.10 Randy Johnson    Added -d, -i, -r, -t and -v options. Simplified parsing logic  #
+#                                  in LoadOratab().                                               #            
+###################################################################################################
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from datetime     import datetime
+from optparse     import OptionParser
+from os.path      import basename
+from os.path      import isfile
+from os.path      import join as pathjoin
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+
+# ---------------------------------------------------------------------------
+# Def : LoadOratab()
+# Desc: Parses the oratab file and returns a dictionary structure of:
+#        {'dbm'      : '/u01/app/oracle/product/11.2.0.3/dbhome_1',
+#         'biuat'    : '/u01/app/oracle/product/11.2.0.3/dbhome_1',
+#         ...
+#        }
+#       Note** the start/stop flag is parsed but not saved.
+#       If the fully qualified oratab file name is passed in it is prepended
+#       to a list of standard locations (/etc/oratab, /var/opt/oracle/oratab)
+#       This list of oratab locations are then searched in order. The first
+#       one to be successfully opened will be used.
+# Args: Oratab (optional, defaults to '')
+# Retn: OratabDict (dictionary object)
+# ---------------------------------------------------------------------------
+def LoadOratab(Oratab=''):
+  OraSid     = ''
+  OraHome    = ''
+  OraFlag    = ''
+  OratabList = []
+  OratabLoc  = ['/etc/oratab','/var/opt/oracle/oratab']
+  otab       = ''
+  HomeList   = []
+
+  # If an oratab file name has been passed in...
+  if (Oratab != ''):
+    # If the oratab file name passed in is not already in the list of common locations...
+    if (not (Oratab in OratabLoc)):
+      OratabLoc.insert(0, Oratab)
+
+  for Oratab in OratabLoc:
+    if (isfile(Oratab)):
+      try:
+        otab = open(Oratab)
+        break                          # exit the loop if the file can be opened.
+      except:
+        print('\n%s' % traceback.format_exc())
+        print('\nCannot open oratab file: ' + Oratab + ' for read.')
+        return {}
+
+  if (otab == ''):
+    return {}
+  else:
+    for line in otab.readlines():
+      line = line.split('#', 1)[0].strip()
+      Count = line.count(':')
+      if (Count >= 1):
+        OraFlag = ''
+        if (Count == 1):
+          (OraSid, OraHome) = line.split(':')
+        elif (Count == 2):
+          (OraSid, OraHome, OraFlag) = line.split(':')
+        elif (Count >= 3):
+          OraSid = line.split(':')[0]
+          OraHome = line.split(':')[1]
+          OraFlag = line.split(':')[2]
+
+        # Validate the Oracle Home. It is only included in
+        # in the list if it is valid, ie. contains a bin
+        # directory with the oracle executable in it.
+        # ------------------------------------------------
+        OraBin = pathjoin(OraHome, 'bin', 'oracle')
+        if (Valid):
+          if (isfile(OraBin)):
+            if (Distinct):
+              if (OraHome not in HomeList):
+                OratabList.append((OraSid, OraHome, OraFlag))
+                HomeList.append(OraHome)
+            else:
+              OratabList.append((OraSid, OraHome, OraFlag))
+              HomeList.append(OraHome)
+        elif (Invalid):
+          if (not isfile(OraBin)):
+            if (Distinct):
+              if (OraHome not in HomeList):
+                OratabList.append((OraSid, OraHome, OraFlag))
+                HomeList.append(OraHome)
+            else:
+              OratabList.append((OraSid, OraHome, OraFlag))
+              HomeList.append(OraHome)
+        else:
+          if (Distinct):
+            if (OraHome not in HomeList):
+              OratabList.append((OraSid, OraHome, OraFlag))
+              HomeList.append(OraHome)
+          else:
+            OratabList.append((OraSid, OraHome, OraFlag))
+            HomeList.append(OraHome)
+
+  return(Oratab, OratabList)
+# ---------------------------------------------------------------------------
+# End LoadOratab()
+# ---------------------------------------------------------------------------
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd          = basename(argv[0])
+  Version      = '1.10'
+  VersionDate  = 'Tue Sep  5 10:49:37 CDT 2017'
+  DevState     = 'Production'
+  Banner       = Cmd + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  #Oratab       = '/etc/oratab'
+  Flag         = ''
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  # signal(SIGPIPE, SIG_DFL)
+
+  Usage  = '\n\n-------------------------------------------------------------------------------'
+  Usage += '\nReport Contents of the Oratab File.'
+  ArgParser = OptionParser(Usage)
+
+  ArgParser.add_option("-d",  action="store_true", dest="Distinct",    default=False, help="report distinct oracle homes found")
+  ArgParser.add_option("-i",  action="store_true", dest="Invalid",     default=False, help="report only invalid oracle homes")
+  ArgParser.add_option("-r",  action="store_true", dest="Restart",     default=False, help="show the restart flag")
+  ArgParser.add_option("-t",  action="store_true", dest="Terse",       default=False, help="terse report format")
+  ArgParser.add_option("-v",  action="store_true", dest="Valid",       default=False, help="report only valid oracle homes")
+  ArgParser.add_option("--v", action="store_true", dest="ShowVer",     default=False, help="print version info.")
+
+  Options, args = ArgParser.parse_args()
+  argc = len(args)
+
+  Distinct = Options.Distinct
+  Invalid  = Options.Invalid
+  Restart  = Options.Restart
+  ShowVer  = Options.ShowVer
+  Terse    = Options.Terse
+  Valid    = Options.Valid
+
+  if (ShowVer):
+    print('\n%s' % Banner)
+    exit()
+
+  if (Valid and Invalid):
+    print('\nThe -i and -v options may not be used together.')
+    exit(1)
+
+  if (Distinct and Restart):
+    print('\nThe -d and -r options may not be used together.')
+    exit(1)
+
+  OratabFile, OratabList = LoadOratab()
+
+  if (not Terse):
+    print('\nOratab File: %s' % OratabFile)
+    if (Distinct):
+      print("\n%-s" % ("Oracle Home"))
+      print("%-s" % ("------------------------------------------------------------"))
+    elif (Restart):
+      print("\n%-20s %-60s %s" % ("Oracle SID","Oracle Home", "F"))
+      print("%-20s %-60s %s" % ("--------------------","------------------------------------------------------------", "-"))
+    else:
+      print("\n%-20s %-s" % ("Oracle SID","Oracle Home"))
+      print("%-20s %-s" % ("--------------------","------------------------------------------------------------"))
+    
+  for (OraSid, OraHome, OraFlag) in sorted(OratabList):
+    if (Distinct):
+      print("%-s" % (OraHome))
+    elif (Restart):
+      print("%-20s %-60s %-s" % (OraSid,OraHome,OraFlag))
+    else:
+      print("%-20s %-60s" % (OraSid,OraHome))
+
+  exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
