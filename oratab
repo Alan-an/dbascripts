@@ -50,7 +50,7 @@ from signal       import signal
 #       This list of oratab locations are then searched in order. The first
 #       one to be successfully opened will be used.
 # Args: Oratab (optional, defaults to '')
-# Retn: OratabDict (dictionary object)
+# Retn: ratab=The file name, OratabDict a list of OraSid, OraHome, OraFlag
 # ---------------------------------------------------------------------------
 def LoadOratab(Oratab=''):
   OraSid     = ''
@@ -140,11 +140,7 @@ if (__name__ == '__main__'):
   VersionDate  = 'Tue Sep  5 10:49:37 CDT 2017'
   DevState     = 'Production'
   Banner       = Cmd + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
-  #Oratab       = '/etc/oratab'
   Flag         = ''
-
-  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
-  # signal(SIGPIPE, SIG_DFL)
 
   Usage  = '\n\n-------------------------------------------------------------------------------'
   Usage += '\nReport Contents of the Oratab File.'
@@ -205,3 +201,4 @@ if (__name__ == '__main__'):
 # --------------------------------------
 # ---- End Main Program ----------------
 # --------------------------------------
+
