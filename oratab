@@ -39,18 +39,11 @@ from signal       import signal
 
 # ---------------------------------------------------------------------------
 # Def : LoadOratab()
-# Desc: Parses the oratab file and returns a dictionary structure of:
-#        {'dbm'      : '/u01/app/oracle/product/11.2.0.3/dbhome_1',
-#         'biuat'    : '/u01/app/oracle/product/11.2.0.3/dbhome_1',
-#         ...
-#        }
-#       Note** the start/stop flag is parsed but not saved.
-#       If the fully qualified oratab file name is passed in it is prepended
-#       to a list of standard locations (/etc/oratab, /var/opt/oracle/oratab)
-#       This list of oratab locations are then searched in order. The first
-#       one to be successfully opened will be used.
+# Desc: Parses the oratab file and returns a list structure of:
+#        [['dbm',   '/u01/app/oracle/product/11.2.0.3/dbhome_1','N']
+#         ['biuat', '/u01/app/oracle/product/11.2.0.3/dbhome_1','N']]
 # Args: Oratab (optional, defaults to '')
-# Retn: ratab=The file name, OratabDict a list of OraSid, OraHome, OraFlag
+# Retn: 1) Oratab - The file name, 2) OratabList - A list of OraSid, OraHome, OraFlag
 # ---------------------------------------------------------------------------
 def LoadOratab(Oratab=''):
   OraSid     = ''
