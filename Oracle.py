@@ -3,14 +3,6 @@
 #  Author:      Randy Johnson                                                                    #
 #  Description: This is a Python library for Oracle. It is an attempt to create a library for    #
 #               functions that are common to many DBA scripts.                                   #
-#  Contents:    LoadOratab(OratabFilename='/etc/oratab')                                         #
-#               RunSqlplus(Sql, ErrChk=False, ConnectString='/ as sysdba')                       #
-#               RunRman(RCV, ErrChk=True, ConnectString='target /'                               #
-#               ErrorCheck(Stdout, ComponentList=['ALL_COMPONENTS'])                             #
-#               LookupError(Error)                                                               #
-#               PrintError(Sql, Stdout, ErrorList)                                               #
-#               LoadFacilities(FacilitiesFile)                                                   #
-#               SetOracleEnv(Sid, Oratab='/etc/oratab')                                          #
 #  Functions:   ChunkString(InStr, Len)                                                          #
 #               CheckPythonVersion()                                                             #
 #               ConvertSize(bytes)                                                               #
@@ -75,6 +67,13 @@
 # 01/05/2016 2.36 Randy Johnson    Added base64 and pickle to the imports when Python verison is #
 #                                  >= 3.                                                         #
 # 07/12/2016 2.37 Randy Johnson    Added GetOracleVersion()                                      #
+# 07/12/2017 2.38 Randy Johnson    Replaced Stdout.strip() with Stdout.rstrip() in RunSqlplus.   #
+# 08/22/2017 2.39 Randy Johnson    ErrorCheck()                                                  #
+#                                  changed: MatchObj = search(Facility + '-[0-9]+', line)        #
+#                                       to: MatchObj = search(Facility + '-\d\d\d\d', line)      #
+#                                  Added ResultSet class.                                        #
+# 09/05/2017 2.40 Randy Johnson    updated the LoadOratab() function to reduce code and improve  #
+#                                  efficiency.                                                   #
 #                                                                                                #
 ##################################################################################################
 
@@ -126,13 +125,13 @@ from time         import sleep
 if (version_info[0] >= 3):
   import pickle
   from configparser import SafeConfigParser
-  from base64       import b64decode  
+  from base64       import b64decode
 else:
   import cPickle as pickle
   from ConfigParser import SafeConfigParser
 # ------------------------------------------------
 
-# For handling termination in stdout pipe when piping output. For example: oerrdump | more
+# For handling termination in stdout pipe; ex: when you run: oerrdump | head
 signal(SIGPIPE, SIG_DFL)
 
 
@@ -144,7 +143,59 @@ PyMinVer = 2.4
 # -------------------------------------------------
 # ---- Function and Class Definitions ------------
 # -------------------------------------------------
+# ---------------------------------------------------------------------------
+# Clas: ResultSet()
+# Desc: Runs a query in sqlplus
+# ---------------------------------------------------------------------------
+class ResultSet:
+  def __init__(self, sel):
+    self.table = []
+    self.row_count = 0
+    self.errors = []
+    self.rc = 0
+    self.stdout = ''
+    colsep = '~'
+    Sql  = "set pagesize      0\n"
+    Sql += "set heading     off\n"
+    Sql += "set lines     32767\n"
+    Sql += "set feedback    off\n"
+    Sql += "set echo        off\n"
+    Sql += "set colsep      '" + colsep + "'\n"
+    Sql += "\n"
+    Sql += sel + ';'
 
+    (self.rc, self.stdout, self.errors) = RunSqlplus(Sql, True, ConnectString = "/ as sysdba")
+    if (self.rc == 0):
+      for row in self.stdout.split('\n'):
+        columns = map(str.strip,row.split(colsep))
+        self.table.append(columns)
+      self.row_count = len(self.table)
+    else:
+      self.table.append([])
+      self.row_count = 0
+
+  def print_table(self):
+    for row in self.table:
+      print(row)
+
+  def get_table(self):
+      return self.table
+
+  def get_row_count(self):
+    return self.row_count
+
+  def get_errors(self):
+    return self.errors
+
+  def get_sqlout(self):
+    return self.stdout
+
+  def get_resultcode(self):
+    return self.rc
+# ---------------------------------------------------------------------------
+# End ResultSet()
+# ---------------------------------------------------------------------------
+  
 # ---------------------------------------------------------------------------
 # Def : GetOracleVersion()
 # Desc: Determines the version of the Oracle binaries.
@@ -155,7 +206,7 @@ def GetOracleVersion(OracleHome):
 
   Sqlplus = pathjoin(OracleHome, 'bin', 'sqlplus')
 
-  
+
   # Start Sqlplus and login
   Proc = Popen([Sqlplus, '-v'], stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
 
@@ -177,20 +228,20 @@ def GetOracleVersion(OracleHome):
 
 # ---------------------------------------------------------------------------
 # Def : ChunkString()
-# Desc: This function returns Cgen (a generator), using a generator 
-#       comprehension. The generator returns the string sliced, from 0 + a 
+# Desc: This function returns Cgen (a generator), using a generator
+#       comprehension. The generator returns the string sliced, from 0 + a
 #       multiple of the length of the chunks, to the length of the chunks + a
-#       multiple of the length of the chunks. 
+#       multiple of the length of the chunks.
 #
-#       You can iterate over the generator like a list, tuple or string - 
-#          for i in ChunkString(s,n): , 
-#       or convert it into a list (for instance) with list(generator). 
+#       You can iterate over the generator like a list, tuple or string -
+#          for i in ChunkString(s,n): ,
+#       or convert it into a list (for instance) with list(generator).
 #       Generators are more memory efficient than lists because they generator
-#       their elements as they are needed, not all at once, however they lack 
+#       their elements as they are needed, not all at once, however they lack
 #       certain features like indexing.
 # Args: 1=String value
 #     : 2=Length of chunks to return.
-# Retn: 
+# Retn:
 # ---------------------------------------------------------------------------
 def ChunkString(InStr, Len):
   return((InStr[i:i+Len] for i in range(0, len(InStr), Len)))
@@ -812,7 +863,7 @@ def GetVips():
     GridProc = Popen([Olsnodes, '-i'], stdin=PIPE, stdout=PIPE, stderr=STDOUT, shell=False, universal_newlines=True, close_fds=True)
   except:
     print('\n%s' % traceback.format_exc())
-    print('Error in call to olsnodes -i')      
+    print('Error in call to olsnodes -i')
 
   rc = GridProc.wait()
   if (rc != 0):
@@ -926,6 +977,7 @@ def LoadOratab(Oratab=''):
   OraHome    = ''
   OraFlag    = ''
   OratabDict = {}
+  OratabList = []
   OratabLoc  = ['/etc/oratab','/var/opt/oracle/oratab']
 
   # If an oratab file name has been passed in...
@@ -944,26 +996,46 @@ def LoadOratab(Oratab=''):
         print('\nCannot open oratab file: ' + Oratab + ' for read.')
         return {}
 
-  OratabContents = otab.read().split('\n')
-  for line in OratabContents:
-    pos = line.find('#')
-    if (pos >= 0):                     # Comment character found.
-      line = line[0:pos]
-    line = line.strip()
-    if (line != ''):
+  # The following replaces the commented code below (###!)
+  if (otab == ''):
+    return {}
+  else:
+    for line in otab.readlines():
+      line = line.split('#', 1)[0].strip()
       Count = line.count(':')
-      if (Count == 2):
-        try:
-          (OraSid, OraHome, OraFlag) = line.split(':')
-          OratabDict[OraSid] = OraHome
-        except:
-          pass
-      elif (Count == 1):
-        try:
+      if (Count >= 1):
+        OraFlag = ''
+        if (Count == 1):
           (OraSid, OraHome) = line.split(':')
-          OratabDict[OraSid] = OraHome
-        except:
-          pass
+        elif (Count == 2):
+          (OraSid, OraHome, OraFlag) = line.split(':')
+        elif (Count >= 3):
+          OraSid = line.split(':')[0]
+          OraHome = line.split(':')[1]
+          OraFlag = line.split(':')[2]
+        OratabDict[OraSid] = OraHome
+
+  ###! OratabContents = otab.read().split('\n')
+  ###! for line in OratabContents:
+  ###!   pos = line.find('#')
+  ###!   if (pos >= 0):                     # Comment character found.
+  ###!     line = line[0:pos]
+  ###!   line = line.strip()
+  ###!   if (line != ''):
+  ###!     Count = line.count(':')
+  ###!     if (Count == 2):
+  ###!       try:
+  ###!         (OraSid, OraHome, OraFlag) = line.split(':')
+  ###!         OratabDict[OraSid] = OraHome
+  ###!       except:
+  ###!         pass
+  ###!     elif (Count == 1):
+  ###!       try:
+  ###!         (OraSid, OraHome) = line.split(':')
+  ###!         OratabDict[OraSid] = OraHome
+  ###!       except:
+  ###!         pass
+  
   return(OratabDict)
 # ---------------------------------------------------------------------------
 # End LoadOratab()
@@ -1215,7 +1287,8 @@ def RunSqlplus(Sql, ErrChk=False, ConnectString='/ as sysdba'):
 
   # Fetch the output
   Stdout, SqlErr = Sqlproc.communicate()
-  Stdout = Stdout.strip()
+  Stdout = Stdout.rstrip()
+  ###! Stdout = Stdout.strip()
 
   # Check for sqlplus errors
   if (ErrChk):
@@ -1372,7 +1445,8 @@ def ErrorCheck(Stdout, ComponentList=['ALL_COMPONENTS']):
   for line in Stdout.split('\n'):
     for Facility in FacilityList:
       # Check for warning and error messages
-      MatchObj = search(Facility + '-[0-9]+', line)
+      ###~ MatchObj = search(Facility + '-[0-9]+', line)
+      MatchObj = search(Facility + '-\d\d\d\d', line)
       if (MatchObj):
         ErrorString = MatchObj.group()
         rc = 1
@@ -1583,7 +1657,7 @@ def SetOracleEnv(Sid, Oratab='/etc/oratab'):
 # Retn    : If success then returns password. If not return blank.
 # ---------------------------------------------------------------------------
 def GetPassword(Name, User, Decrypt, PasswdFilename='/home/oracle/dba/etc/.passwd'):
- 
+
   try:
     PasswdFile = open(PasswdFilename, 'r')
     pwdContents = PasswdFile.read()
@@ -1709,7 +1783,7 @@ def FormatNumber(s, tSep=',', dSep='.'):
 #       If ErrChk=False then return Stdout only
 # ---------------------------------------------------------------------------
 def RunDgmgrl(DgbCmd, ErrChk=True, ConnectString='/'):
-  
+
   if (ConnectString == '/'):
     if (not('ORACLE_SID' in environ.keys())):
       print('ORACLE_SID must be set if connect string is:' + ' \'' + ConnectString + '\'')
@@ -1742,7 +1816,7 @@ def RunDgmgrl(DgbCmd, ErrChk=True, ConnectString='/'):
   # Stderr is just a placeholder. We redirected stderr to stdout as follows 'stderr=STDOUT'.
   (Stdout, Stderr) = proc.communicate(DgbCmd)
   rc = proc.returncode
-  
+
   if(ErrChk == True):
     return(rc,Stdout)
   else:
@@ -1759,7 +1833,7 @@ def RunDgmgrl(DgbCmd, ErrChk=True, ConnectString='/'):
   ###!   # -------------------------------------------------------------------------------------------------------
   ###!   #ComponentList = ['sqlplus','rdbms','network','crs','css','evm','has','oracore','plsql','precomp','racg','srvm','svrmgr']
   ###!   ComponentList = ['ALL_COMPONENTS']
-  ###! 
+  ###!
   ###!   # Brief explanation of what is returned by ErrorCheck()
   ###!   # ------------------------------------------------------
   ###!   # rc is the return code (0 is good, anything else is bad). ErrorList is a list of list structures
