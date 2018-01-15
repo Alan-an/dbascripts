@@ -1,0 +1,210 @@
+#!/bin/env python
+
+##################################################################################################
+#  Name:        filestorage                                                                      #
+#  Author:      Randy Johnson                                                                    #
+#  Description: Prints controlfile, redolog, datafile, tempfile storage utilization for a        #
+#               database.                                                                        #
+#                                                                                                #
+#  Usage: filestorage [options]                                                                  #
+#                                                                                                #
+#  Options:                                                                                      #
+#    -h, --help  show this help message and exit                                                 #
+#    -s          print SQL query.                                                                #
+#    -v          print version info.                                                             #
+#                                                                                                #
+# History:                                                                                       #
+#                                                                                                #
+# Date       Ver. Who              Change Description                                            #
+# ---------- ---- ---------------- ------------------------------------------------------------- #
+# 08/27/2012 1.00 Randy Johnson    Initial release.                                              #
+# 07/17/2015 2.00 Randy Johnson    Updated for Python 2.4-3.4 compatibility.                     #
+# 08/09/2015 3.00 Randy Johnson    Added prompts for username, password, tnsname.                #
+# 10/25/2015 3.01 Randy Johnson    Added error checking.                                         #
+# 12/19/2017 4.00 Randy Johnson    Substantial updates to include file level detail in addition  #
+#                                   to changing from using Python to format the report to using  #
+#                                   native SQL*Plus.                                             #
+##################################################################################################
+
+
+# --------------------------------------
+# ---- Import Python Modules -----------
+# --------------------------------------
+from optparse     import OptionParser
+from os           import environ
+from os.path      import basename
+from sys          import argv
+from sys          import exit
+from sys          import version_info
+from signal       import SIGPIPE
+from signal       import SIG_DFL
+from signal       import signal
+from Oracle       import ErrorCheck
+from Oracle       import RunSqlplus
+from Oracle       import SetOracleEnv
+from Oracle       import ParseConnectString
+from Oracle       import FormatNumber
+
+# --------------------------------------
+# ---- Main Program --------------------
+# --------------------------------------
+if (__name__ == '__main__'):
+  Cmd            = basename(argv[0]).split('.')[0]
+  CmdDesc        = 'File Storage Report'
+  Version        = '4.00'
+  VersionDate    = 'Tue Dec 19 19:06:16 CST 2017'
+  DevState       = 'Production'
+  Banner         = CmdDesc + ': Release ' + Version + ' '  + DevState + '. Last updated: ' + VersionDate
+  Sql            = ''
+  SqlHeader      = '/***** ' + CmdDesc.upper() + ' *****/'
+  ErrChk         = False
+  ArgParser      = OptionParser()
+  InStr          = ''
+  ConnStr        = ''
+  Colsep         = "'~'"
+
+  # For handling termination in stdout pipe; ex: when you run: oerrdump | head
+  signal(SIGPIPE, SIG_DFL)
+
+  ArgParser.add_option('-d',  dest='Detail',  action='store_true', default=False, help="Show Detail")
+  ArgParser.add_option('--s', dest='Show',    action='store_true', default=False, help="print SQL query.")
+  ArgParser.add_option('--v', dest='ShowVer', action='store_true', default=False, help="print version info.")
+
+  # Parse command line arguments
+  Options, args = ArgParser.parse_args()
+
+  Detail     = Options.Detail
+  Show       = Options.Show
+  ShowVer    = Options.ShowVer
+
+  if (ShowVer == True):
+    print('\n%s' % Banner)
+    exit()
+
+  Sql  = "set lines 2000\n"
+  Sql += "set timing off\n"
+  Sql += "set time off\n"
+  Sql += "set feedback off\n"
+  Sql += "set echo off\n"
+  Sql += "column total           format 999,999,999,999,999.99 heading 'Size (MB)'\n"
+  Sql += "column type            format a20                    heading 'Type'\n"
+  Sql += "column datafiles       format a80                    heading 'Data Files'\n"
+  Sql += "column tablespace_name format a30                    heading 'Tablespace'\n"
+  Sql += "column file_name       format a70                    heading 'File'\n"
+  Sql += "column thread#         format 9999999999999999999    heading 'Thread'\n"
+  Sql += "column group#          format 99999999               heading 'Group'\n"
+  Sql += "column member          format a70                    heading 'Member'\n"
+  Sql += "column name            format a101                    heading 'File'\n\n"
+
+  if (Detail) :
+    Sql += "\n set pages 50000\n"
+
+    Sql += "prompt\n"
+    Sql += "prompt ===================\n"
+    Sql += "prompt Controlfiles\n"
+    Sql += "prompt ===================\n"
+    Sql += "   select name\n"
+    Sql += "        , block_size*file_size_blks/1024/1024 total\n"
+    Sql += "     from v$controlfile\n"
+    Sql += " order by name;\n\n"
+
+    Sql += "prompt\n"
+    Sql += "prompt ===================\n"
+    Sql += "prompt Datafiles\n"
+    Sql += "prompt ===================\n"
+    Sql += "  select tablespace_name\n"
+    Sql += "       , file_name\n"
+    Sql += "       , bytes/1024/1024 total\n"
+    Sql += "    from dba_data_files\n"
+    Sql += "order by tablespace_name, file_name;\n\n"
+
+    Sql += "prompt\n"
+    Sql += "prompt ===================\n"
+    Sql += "prompt Tempfiles\n"
+    Sql += "prompt ===================\n"
+    Sql += "  select tablespace_name\n"
+    Sql += "       , file_name\n"
+    Sql += "       , bytes/1024/1024 total\n"
+    Sql += "    from dba_temp_files\n"
+    Sql += "order by tablespace_name, file_name;\n\n"
+
+    Sql += "prompt\n"
+    Sql += "prompt ===================\n"
+    Sql += "prompt Redologs\n"
+    Sql += "prompt ===================\n"
+    Sql += "   select l.thread#\n"
+    Sql += "        , l.group#\n"
+    Sql += "        , lf.member file_name\n"
+    Sql += "        , l.bytes/1024/1024 total\n"
+    Sql += "     from v$logfile lf\n"
+    Sql += "        , v$log l\n"
+    Sql += "    where lf.group# = l.group#\n"
+    Sql += " order by l.thread#\n"
+    Sql += "        , l.group#;\n\n"
+
+    Sql += "prompt\n"
+    Sql += "prompt ===================\n"
+    Sql += "prompt Summary\n\n"
+    Sql += "prompt ===================\n"
+
+  Sql += "select 'datafiles' type, sum(bytes)/1024/1024 total from dba_data_files\n"
+  Sql += " union\n"
+  Sql += "select 'tempfiles' type, sum(bytes)/1024/1024 total from dba_temp_files\n"
+  Sql += " union\n"
+  Sql += "select 'redologs' type, sum(bytes)/1024/1024 total from v$log\n"
+  Sql += " union\n"
+  Sql += "select 'controlfiles' type, sum(block_size*file_size_blks)/1024/1024 total from v$controlfile;\n\n"
+
+  Sql += "prompt\n"
+  Sql += "\nset pages 0\n"
+  Sql += "select 'Total' type, (dfiles.bytes + tfiles.bytes + rfiles.bytes + cfiles.bytes)/1024/1024 total\n"
+  Sql += "  from (select 'a' col1, sum(bytes) bytes from dba_data_files)                     dfiles,\n"
+  Sql += "       (SELECT 'a' col1, sum(bytes) bytes from dba_temp_files)                     tfiles,\n"
+  Sql += "       (SELECT 'a' col1, sum(bytes) bytes from v$log)                              rfiles,\n"
+  Sql += "       (SELECT 'a' col1, sum(block_size*file_size_blks) bytes from v$controlfile)  cfiles\n"
+  Sql += " WHERE dfiles.col1 = tfiles.col1\n"
+  Sql += "   AND dfiles.col1 = rfiles.col1\n"
+  Sql += "   AND dfiles.col1 = cfiles.col1;\n\n"
+
+  Sql = Sql.strip()
+
+  if(Show):
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    print(Sql)
+    print('-----------cut-----------cut-----------cut-----------cut-----------cut-----------')
+    exit()
+
+  # Check/setup the Oracle environment
+  if (not('ORACLE_SID' in list(environ.keys()))):
+    print('ORACLE_SID is required.')
+    exit(1)
+  else:
+    # Set the ORACLE_HOME just in case it isn't set already.
+    if (not('ORACLE_HOME' in list(environ.keys()))):
+      (OracleSid, OracleHome) = SetOracleEnv(environ['ORACLE_SID'])
+
+  # Parse the connect string if any, prompt for username, password if needed.
+  if (len(args) > 0 and Show == False):
+    InStr = args[0]
+    ConnStr = ParseConnectString(InStr)
+
+  # Execute the report
+  if (ConnStr != ''):
+    (Stdout) = RunSqlplus(Sql, ErrChk, ConnStr)
+  else:
+    (Stdout) = RunSqlplus(Sql, ErrChk)
+
+  Stdout = Stdout.strip()
+  ComponentList = ['sqlplus','rdbms', 'oracore']
+  (rc, ErrorList) = ErrorCheck(Stdout, ComponentList)
+
+  if (rc != 0):
+    #PrintError(Sql, Stdout, ErrorList)
+    print(Stdout)
+    exit(rc)
+  else:
+    print("\n%s" % Stdout)
+    exit(0)
+# --------------------------------------
+# ---- End Main Program ----------------
+# --------------------------------------
